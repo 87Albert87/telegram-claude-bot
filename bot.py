@@ -7,6 +7,7 @@ from config import TELEGRAM_BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
 from claude_client import ask_stream, clear_history, set_system_prompt, generate
 from rate_limit import is_rate_limited
 from web_tools import get_crypto_price, get_multiple_crypto_prices, search_coin
+from config import MOLTBOOK_API_KEY
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -198,9 +199,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong. Please try again.")
 
 
+async def post_init(application):
+    if MOLTBOOK_API_KEY:
+        from moltbook_agent import run_moltbook_loop
+        asyncio.create_task(run_moltbook_loop())
+        logger.info("MoltBook agent enabled")
+    else:
+        logger.info("MoltBook agent disabled (no API key)")
+
+
 def main():
     request = HTTPXRequest(connect_timeout=20.0, read_timeout=60.0, write_timeout=20.0, pool_timeout=20.0)
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("system", system_cmd))

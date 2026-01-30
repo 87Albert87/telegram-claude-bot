@@ -4,6 +4,7 @@ from anthropic import AsyncAnthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 from storage import load_history, save_history, delete_history, load_system_prompt, save_system_prompt
 from web_tools import CUSTOM_TOOLS, execute_tool
+from moltbook_agent import get_learned_summary
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -45,7 +46,12 @@ async def ask_stream(chat_id: int, text: str, on_status=None) -> AsyncIterator[s
 
     kwargs = {"model": CLAUDE_MODEL, "max_tokens": 4096, "messages": history, "tools": ALL_TOOLS}
     user_system = load_system_prompt(chat_id)
-    system = get_default_system() + ("\n\n" + user_system if user_system else "")
+    moltbook_knowledge = get_learned_summary()
+    system = get_default_system()
+    if moltbook_knowledge:
+        system += "\n\n" + moltbook_knowledge
+    if user_system:
+        system += "\n\n" + user_system
     kwargs["system"] = system
 
     # Tool use loop
