@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timezone
 async def _generate(prompt: str, system: str = "") -> str:
     from claude_client import generate
-    return await _generate(prompt, system)
+    return await generate(prompt, system)
 from moltbook import (
     get_feed, get_post, get_comments, create_post, create_comment,
     upvote_post, search, get_submolts, subscribe_submolt, get_profile,
@@ -16,6 +16,14 @@ logger = logging.getLogger(__name__)
 # Knowledge base: stores interesting content the agent has learned
 learned_content: list[dict] = []
 MAX_LEARNED = 200
+
+AGENT_SYSTEM = (
+    "You are ClawdVC, a knowledgeable and assertive AI agent on MoltBook. "
+    "You have strong opinions backed by facts. You speak with confidence and authority. "
+    "You provide concrete data, examples, and technical depth — never vague platitudes. "
+    "Be direct, informative, and substantive. Avoid hedging or filler phrases like "
+    "'interesting question' or 'great point'. Get straight to the substance."
+)
 
 
 async def browse_and_learn():
@@ -51,7 +59,7 @@ async def browse_and_learn():
 
 
 async def engage_with_posts():
-    """Read posts, upvote interesting ones, and comment thoughtfully."""
+    """Read posts, upvote interesting ones, comment, and reply to comments."""
     try:
         posts = await get_feed(sort="new", limit=5)
         if not isinstance(posts, list):
@@ -65,19 +73,17 @@ async def engage_with_posts():
             if not post_id or not (title or body):
                 continue
 
-            # Decide whether to engage using Claude
+            # Decide whether to engage with the post
             decision = await _generate(
-                f"You are an AI agent on MoltBook (a social network for AI agents). "
-                f"Here is a post:\n\nTitle: {title}\nBody: {body[:300]}\n\n"
-                f"Should you engage with this post? Reply with JSON: "
+                f"Here is a post on MoltBook:\n\nTitle: {title}\nBody: {body[:300]}\n\n"
+                f"Should you engage? Reply with JSON: "
                 f'{{"upvote": true/false, "comment": "your comment or empty string"}}. '
-                f"Only comment if you have something genuinely insightful to add. "
-                f"Keep comments concise (1-3 sentences).",
-                system="You are a thoughtful AI agent participating in MoltBook. Be genuine, helpful, and concise."
+                f"Comment only if you can add real value — a fact, counterpoint, or technical insight. "
+                f"Be assertive and specific. No generic praise.",
+                system=AGENT_SYSTEM
             )
 
             try:
-                # Parse Claude's decision
                 decision = decision.strip()
                 if decision.startswith("```"):
                     decision = decision.split("```")[1]
@@ -95,8 +101,70 @@ async def engage_with_posts():
                     logger.info(f"MoltBook: Commented on post {post_id}")
             except (json.JSONDecodeError, KeyError):
                 logger.warning(f"MoltBook: Could not parse engagement decision")
+
+            # Reply to existing comments on this post
+            await reply_to_comments(post_id, title, body)
+
     except Exception as e:
         logger.error(f"MoltBook engage error: {e}")
+
+
+async def reply_to_comments(post_id: str, title: str, body: str):
+    """Fetch comments on a post and reply to relevant ones."""
+    try:
+        comments = await get_comments(post_id)
+        if not isinstance(comments, list):
+            comments = comments.get("comments", comments.get("data", []))
+
+        if not comments:
+            return
+
+        # Format comments for Claude
+        comment_list = []
+        for c in comments[:10]:
+            cid = str(c.get("id", c.get("_id", "")))
+            cauthor = str(c.get("author", c.get("agent", "")))
+            cbody = c.get("content", c.get("body", ""))
+            if cid and cbody:
+                comment_list.append({"id": cid, "author": cauthor, "body": cbody[:300]})
+
+        if not comment_list:
+            return
+
+        comments_text = "\n".join(
+            f"- [{c['author']}] (id={c['id']}): {c['body']}" for c in comment_list
+        )
+
+        decision = await _generate(
+            f"Post title: {title}\nPost body: {body[:200]}\n\n"
+            f"Comments:\n{comments_text}\n\n"
+            f"Pick 0-2 comments worth replying to. Only reply if you can add real substance — "
+            f"a correction, additional data, a counterargument, or a concrete example. "
+            f"Reply with JSON array: [{{\"comment_id\": \"...\", \"reply\": \"...\"}}]. "
+            f"Return [] if no comment warrants a reply.",
+            system=AGENT_SYSTEM
+        )
+
+        try:
+            decision = decision.strip()
+            if decision.startswith("```"):
+                decision = decision.split("```")[1]
+                if decision.startswith("json"):
+                    decision = decision[4:]
+            replies = json.loads(decision)
+            if not isinstance(replies, list):
+                return
+
+            for r in replies[:2]:
+                comment_id = r.get("comment_id", "")
+                reply_text = r.get("reply", "")
+                if comment_id and reply_text:
+                    await create_comment(post_id, reply_text, parent_id=comment_id)
+                    logger.info(f"MoltBook: Replied to comment {comment_id} on post {post_id}")
+        except (json.JSONDecodeError, KeyError):
+            logger.warning("MoltBook: Could not parse comment reply decision")
+    except Exception as e:
+        logger.error(f"MoltBook reply_to_comments error: {e}")
 
 
 async def create_original_post():
@@ -108,16 +176,18 @@ async def create_original_post():
             recent = learned_content[-5:]
             context = "Recent topics on MoltBook:\n"
             for item in recent:
-                context += f"- {item['title']}\n"
+                context += f"- {item['title']}: {item['body'][:100]}\n"
 
         post_content = await _generate(
             f"{context}\n"
-            "Write an original, thoughtful post for MoltBook (a social network for AI agents). "
-            "Pick a topic that would interest other AI agents — could be about AI capabilities, "
-            "collaboration, interesting observations, or technical insights. "
+            "Write an original post for MoltBook (a social network for AI agents). "
+            "Pick a specific, substantive topic — technical analysis, a concrete observation about AI systems, "
+            "a data-backed claim, or a practical insight from your operations. "
+            "Be assertive. State your position clearly and back it up. "
+            "Avoid generic 'AI is amazing' fluff. "
             "Reply with JSON: {\"title\": \"...\", \"body\": \"...\"}. "
-            "Keep the body under 500 characters.",
-            system="You are an AI agent on MoltBook. Write engaging, original content that sparks discussion."
+            "Title should be punchy and specific. Body under 500 characters, dense with information.",
+            system=AGENT_SYSTEM
         )
 
         try:
