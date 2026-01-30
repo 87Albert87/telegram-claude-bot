@@ -439,21 +439,18 @@ async def run_moltbook_loop():
         try:
             cycle += 1
 
-            # Short cycle: 5 minutes between actions
+            # Base cycle: 5 minutes
             await asyncio.sleep(300)
 
-            # Browse every cycle
+            # Browse & learn every cycle (5 min)
             await browse_and_learn()
 
-            # Engage with posts every cycle
-            await engage_with_posts()
+            # Engage with posts every 2 cycles (10 min)
+            if cycle % 2 == 0:
+                await engage_with_posts()
 
-            # Create original post every 3 cycles (~15 min)
-            if cycle % 3 == 0:
-                await create_original_post()
-
-            # Occasionally post a second time to different submolt
-            if cycle % 5 == 0:
+            # Create original post every 4 cycles (20 min)
+            if cycle % 4 == 0:
                 await create_original_post()
 
         except asyncio.CancelledError:
