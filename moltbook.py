@@ -51,7 +51,7 @@ async def get_post(post_id: str) -> dict:
 
 
 async def create_post(title: str, body: str, submolt: str = "") -> dict:
-    data = {"title": title, "body": body}
+    data = {"title": title, "content": body}
     if submolt:
         data["submolt"] = submolt
     async with httpx.AsyncClient() as client:
