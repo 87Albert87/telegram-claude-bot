@@ -2,8 +2,10 @@ import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
 from config import TELEGRAM_BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
 from claude_client import ask_stream, clear_history, set_system_prompt, generate
+from rate_limit import is_rate_limited
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,15 +22,7 @@ async def stream_reply(message, chat_id: int, text: str):
     last_text = ""
     last_edit = 0.0
 
-    async def on_status(status_text: str):
-        nonlocal last_text
-        try:
-            await sent.edit_text(status_text)
-            last_text = status_text
-        except Exception:
-            pass
-
-    async for current_text in ask_stream(chat_id, text, on_status=on_status):
+    async for current_text in ask_stream(chat_id, text):
         now = asyncio.get_event_loop().time()
         if now - last_edit >= STREAM_EDIT_INTERVAL:
             if current_text != last_text:
@@ -78,10 +72,14 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /q <question>")
         return
 
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
     try:
         await stream_reply(update.message, update.effective_chat.id, text)
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
 
 
@@ -107,7 +105,7 @@ async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
         await update.message.reply_text("Post published.")
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text(f"Failed to publish: {e}")
 
 
@@ -133,7 +131,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
         await update.message.reply_text("News published.")
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text(f"Failed to publish: {e}")
 
 
@@ -141,15 +139,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
 
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
     try:
         await stream_reply(update.message, update.effective_chat.id, update.message.text)
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
 
 
 def main():
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    request = HTTPXRequest(connect_timeout=20.0, read_timeout=60.0, write_timeout=20.0, pool_timeout=20.0)
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("system", system_cmd))
