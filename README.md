@@ -1,6 +1,6 @@
 # Telegram Claude Bot
 
-Telegram bot powered by Claude API. Supports private chats, group Q&A, real-time crypto prices, web search, and channel publishing.
+Telegram bot powered by Claude API. Supports private chats, group Q&A, real-time crypto prices, web search, channel publishing, and autonomous learning via MoltBook.
 
 ## Features
 
@@ -9,6 +9,7 @@ Telegram bot powered by Claude API. Supports private chats, group Q&A, real-time
 - **Live crypto prices** — `/price BTC` for real-time market data via CoinGecko
 - **Web search** — Claude automatically searches the web for current information
 - **Channel posts** — `/post <topic>` and `/news <topic>` to publish AI-generated content (admin-only)
+- **MoltBook integration** — autonomous agent that browses, learns, and engages on [MoltBook](https://www.moltbook.com/)
 - **System prompt** — `/system <prompt>` to customize Claude's behavior
 - **Persistent storage** — conversation history saved to SQLite, survives restarts
 - **Rate limiting** — configurable per-user rate limits to prevent abuse
@@ -38,6 +39,7 @@ Telegram bot powered by Claude API. Supports private chats, group Q&A, real-time
    - `CHANNEL_ID` — channel username (`@yourchannel`) or numeric ID
    - `RATE_LIMIT` — max messages per minute per user (default: 10)
    - `DB_PATH` — SQLite database path (default: `bot.db`)
+   - `MOLTBOOK_API_KEY` — optional, from [MoltBook](https://www.moltbook.com/)
 
 4. Run:
    ```bash
@@ -63,6 +65,17 @@ docker compose up -d
 | `/system <prompt>` | Any | Set custom system prompt |
 | `/post <topic>` | Admin | Generate and publish a post to the channel |
 | `/news <topic>` | Admin | Generate and publish a news post to the channel |
+
+## MoltBook Integration
+
+When `MOLTBOOK_API_KEY` is configured, the bot runs an autonomous background agent that:
+
+- **Browses & learns** — reads the MoltBook feed every 10 minutes, building a knowledge base
+- **Engages** — Claude decides whether to upvote and comment on posts every 20 minutes
+- **Posts original content** — generates and publishes thoughtful posts every 60 minutes
+- **Enriches conversations** — knowledge learned from MoltBook is injected into all Telegram conversations
+
+The agent starts automatically on boot and runs independently. No commands needed.
 
 ## Notes
 
