@@ -6,6 +6,7 @@ from telegram.request import HTTPXRequest
 from config import TELEGRAM_BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
 from claude_client import ask_stream, clear_history, set_system_prompt, generate
 from rate_limit import is_rate_limited
+from web_tools import get_crypto_price, get_multiple_crypto_prices, search_coin
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/q <question> - Ask a question\n"
         "/reset - Clear conversation history\n"
         "/system <prompt> - Set a custom system prompt\n"
+        "/price <coin> - Live crypto price (e.g. /price BTC)\n"
         "/post <topic> - Generate and publish a post (admin)\n"
         "/news <topic> - Generate and publish news (admin)"
     )
@@ -78,6 +80,52 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await stream_reply(update.message, update.effective_chat.id, text)
+    except Exception as e:
+        logger.error(f"Error: {e}", exc_info=True)
+        await update.message.reply_text("Something went wrong. Please try again.")
+
+
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = " ".join(context.args) if context.args else ""
+    if not query:
+        await update.message.reply_text("Usage: /price <coin>\nExamples: /price BTC, /price ethereum, /price BTC ETH SOL")
+        return
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
+    try:
+        coins = query.replace(",", " ").split()
+        if len(coins) == 1:
+            # Single coin — try direct ID first, then search
+            coin = coins[0].lower()
+            result = await get_crypto_price(coin)
+            if "not found" in result:
+                search_result = await search_coin(coin)
+                if "No coins found" not in search_result:
+                    # Use the first result's ID
+                    first_id = search_result.split("\n")[0].split("ID: ")[1].split(" |")[0]
+                    result = await get_crypto_price(first_id)
+            await update.message.reply_text(result)
+        else:
+            # Multiple coins — search for IDs, then get prices
+            ids = []
+            for coin in coins:
+                coin = coin.lower()
+                # Try as direct ID first
+                ids.append(coin)
+            result = await get_multiple_crypto_prices(",".join(ids))
+            if "No coins found" in result:
+                # Try searching each
+                ids = []
+                for coin in coins:
+                    sr = await search_coin(coin)
+                    if "No coins found" not in sr:
+                        ids.append(sr.split("\n")[0].split("ID: ")[1].split(" |")[0])
+                if ids:
+                    result = await get_multiple_crypto_prices(",".join(ids))
+            await update.message.reply_text(result)
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
@@ -157,6 +205,7 @@ def main():
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("system", system_cmd))
     app.add_handler(CommandHandler("q", question))
+    app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("post", post))
     app.add_handler(CommandHandler("news", news))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
