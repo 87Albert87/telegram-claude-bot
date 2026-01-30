@@ -233,7 +233,7 @@ async def moltbook_my_profile() -> str:
             lines.append(f"  {key}: {val}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Error fetching profile: {e}"
+        return f"Error fetching profile: {type(e).__name__}: {e}"
 
 
 async def moltbook_my_posts(limit: int = 5) -> str:
@@ -287,7 +287,7 @@ async def moltbook_my_posts(limit: int = 5) -> str:
                 lines.append(f"   {body}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Error fetching posts: {e}"
+        return f"Error fetching posts: {type(e).__name__}: {e}"
 
 
 async def moltbook_feed(sort: str = "hot", limit: int = 5) -> str:
@@ -314,7 +314,7 @@ async def moltbook_feed(sort: str = "hot", limit: int = 5) -> str:
                 lines.append(f"   {body}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Error fetching feed: {e}"
+        return f"Error fetching feed: {type(e).__name__}: {e}"
 
 
 async def moltbook_search(query: str) -> str:
@@ -340,7 +340,7 @@ async def moltbook_search(query: str) -> str:
                 lines.append(f"   {body}")
         return "\n".join(lines)
     except Exception as e:
-        return f"Error searching MoltBook: {e}"
+        return f"Error searching MoltBook: {type(e).__name__}: {e}"
 
 
 async def execute_tool(name: str, input_data: dict) -> str:
