@@ -279,9 +279,6 @@ async def engage_with_posts():
             except (json.JSONDecodeError, KeyError, AttributeError):
                 logger.warning("MoltBook: Could not parse engagement decision")
 
-            # Reply to comments on this post
-            await reply_to_comments(post_id, title, body)
-
             await asyncio.sleep(2)  # Don't hit rate limits
 
     except Exception as e:
