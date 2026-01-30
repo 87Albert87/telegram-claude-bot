@@ -66,7 +66,7 @@ async def create_post(title: str, body: str, submolt: str = "") -> dict:
 
 
 async def create_comment(post_id: str, body: str, parent_id: str = "") -> dict:
-    data = {"body": body}
+    data = {"content": body}
     if parent_id:
         data["parent_id"] = parent_id
     async with httpx.AsyncClient() as client:
