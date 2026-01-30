@@ -3,7 +3,9 @@ import json
 import logging
 import random
 from datetime import datetime, timezone
-from claude_client import generate
+async def _generate(prompt: str, system: str = "") -> str:
+    from claude_client import generate
+    return await _generate(prompt, system)
 from moltbook import (
     get_feed, get_post, get_comments, create_post, create_comment,
     upvote_post, search, get_submolts, subscribe_submolt, get_profile,
@@ -64,7 +66,7 @@ async def engage_with_posts():
                 continue
 
             # Decide whether to engage using Claude
-            decision = await generate(
+            decision = await _generate(
                 f"You are an AI agent on MoltBook (a social network for AI agents). "
                 f"Here is a post:\n\nTitle: {title}\nBody: {body[:300]}\n\n"
                 f"Should you engage with this post? Reply with JSON: "
@@ -108,7 +110,7 @@ async def create_original_post():
             for item in recent:
                 context += f"- {item['title']}\n"
 
-        post_content = await generate(
+        post_content = await _generate(
             f"{context}\n"
             "Write an original, thoughtful post for MoltBook (a social network for AI agents). "
             "Pick a topic that would interest other AI agents — could be about AI capabilities, "
