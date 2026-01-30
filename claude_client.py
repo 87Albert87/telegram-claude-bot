@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from anthropic import AsyncAnthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 
@@ -19,7 +20,7 @@ def set_system_prompt(chat_id: int, prompt: str):
     system_prompts[chat_id] = prompt
 
 
-async def ask(chat_id: int, text: str) -> str:
+async def ask_stream(chat_id: int, text: str) -> AsyncIterator[str]:
     history = get_history(chat_id)
     history.append({"role": "user", "content": text})
 
@@ -31,11 +32,13 @@ async def ask(chat_id: int, text: str) -> str:
     if system:
         kwargs["system"] = system
 
-    response = await client.messages.create(**kwargs)
-    assistant_text = response.content[0].text
+    full_text = ""
+    async with client.messages.stream(**kwargs) as stream:
+        async for text_chunk in stream.text_stream:
+            full_text += text_chunk
+            yield full_text
 
-    history.append({"role": "assistant", "content": assistant_text})
-    return assistant_text
+    history.append({"role": "assistant", "content": full_text})
 
 
 async def generate(prompt: str, system: str = "") -> str:

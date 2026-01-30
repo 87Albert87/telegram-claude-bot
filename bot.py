@@ -1,15 +1,41 @@
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
-from claude_client import ask, clear_history, set_system_prompt, generate
+from claude_client import ask_stream, clear_history, set_system_prompt, generate
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+STREAM_EDIT_INTERVAL = 1.0
+
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+async def stream_reply(message, chat_id: int, text: str):
+    sent = await message.reply_text("...")
+    last_text = ""
+    last_edit = 0.0
+
+    async for current_text in ask_stream(chat_id, text):
+        now = asyncio.get_event_loop().time()
+        if now - last_edit >= STREAM_EDIT_INTERVAL:
+            if current_text != last_text:
+                try:
+                    await sent.edit_text(current_text)
+                    last_text = current_text
+                    last_edit = now
+                except Exception:
+                    pass
+
+    if current_text != last_text:
+        try:
+            await sent.edit_text(current_text)
+        except Exception:
+            pass
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -44,10 +70,8 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /q <question>")
         return
 
-    chat_id = update.effective_chat.id
     try:
-        reply = await ask(chat_id, text)
-        await update.message.reply_text(reply)
+        await stream_reply(update.message, update.effective_chat.id, text)
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text("Something went wrong. Please try again.")
@@ -109,12 +133,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private":
         return
 
-    chat_id = update.effective_chat.id
-    text = update.message.text
-
     try:
-        reply = await ask(chat_id, text)
-        await update.message.reply_text(reply)
+        await stream_reply(update.message, update.effective_chat.id, update.message.text)
     except Exception as e:
         logger.error(f"Error: {e}")
         await update.message.reply_text("Something went wrong. Please try again.")
