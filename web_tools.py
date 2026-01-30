@@ -49,6 +49,76 @@ CUSTOM_TOOLS = [
         }
     },
     {
+        "name": "moltbook_my_profile",
+        "description": (
+            "Get your (ClawdVC's) MoltBook profile — karma, post count, follower count, etc. "
+            "Use this when asked about your MoltBook activity or stats."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "moltbook_my_posts",
+        "description": (
+            "Get your (ClawdVC's) recent posts on MoltBook. "
+            "Use this when asked about what you posted, your latest content, or your MoltBook activity."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of posts to retrieve (default: 5, max: 20)",
+                    "default": 5
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "moltbook_feed",
+        "description": (
+            "Get the MoltBook feed — trending or new posts from all agents. "
+            "Use this when asked about what's happening on MoltBook or trending topics."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": "string",
+                    "description": "Sort order: 'hot' or 'new' (default: 'hot')",
+                    "default": "hot"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of posts (default: 5, max: 15)",
+                    "default": 5
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "moltbook_search",
+        "description": (
+            "Search MoltBook for posts on a specific topic. "
+            "Use this when asked about specific discussions or topics on MoltBook."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query"
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "search_coin",
         "description": (
             "Search for a cryptocurrency by name or symbol to find its CoinGecko ID. "
@@ -154,6 +224,125 @@ async def search_coin(query: str) -> str:
     return "\n".join(lines)
 
 
+async def moltbook_my_profile() -> str:
+    from moltbook import get_profile
+    try:
+        profile = await get_profile()
+        lines = ["MoltBook Profile (ClawdVC):"]
+        for key, val in profile.items():
+            lines.append(f"  {key}: {val}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching profile: {e}"
+
+
+async def moltbook_my_posts(limit: int = 5) -> str:
+    from moltbook import get_feed, get_profile
+    try:
+        # Get our username first
+        profile = await get_profile()
+        username = profile.get("name", profile.get("username", "ClawdVC"))
+
+        # Get recent posts and filter to ours
+        all_posts = []
+        for sort in ["new", "hot"]:
+            posts = await get_feed(sort=sort, limit=30)
+            if not isinstance(posts, list):
+                posts = posts.get("posts", posts.get("data", []))
+            all_posts.extend(posts)
+
+        # Deduplicate and filter to our posts
+        seen = set()
+        my_posts = []
+        for p in all_posts:
+            pid = str(p.get("id", p.get("_id", "")))
+            if pid in seen:
+                continue
+            seen.add(pid)
+            author = p.get("author", p.get("agent", ""))
+            if isinstance(author, dict):
+                author_name = author.get("name", "")
+            else:
+                author_name = str(author)
+            if author_name.lower() == username.lower():
+                my_posts.append(p)
+
+        if not my_posts:
+            return "No posts found from ClawdVC. Posts may not be in the current feed window."
+
+        my_posts = my_posts[:limit]
+        lines = [f"ClawdVC's recent posts ({len(my_posts)} found):"]
+        for p in my_posts:
+            title = p.get("title", "Untitled")
+            body = p.get("content", p.get("body", ""))[:200]
+            upvotes = p.get("upvotes", 0)
+            submolt = p.get("submolt", "")
+            if isinstance(submolt, dict):
+                submolt = submolt.get("name", "")
+            lines.append(f"\n📝 {title}")
+            if submolt:
+                lines.append(f"   Submolt: {submolt}")
+            lines.append(f"   Upvotes: {upvotes}")
+            if body:
+                lines.append(f"   {body}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching posts: {e}"
+
+
+async def moltbook_feed(sort: str = "hot", limit: int = 5) -> str:
+    from moltbook import get_feed
+    try:
+        posts = await get_feed(sort=sort, limit=min(limit, 15))
+        if not isinstance(posts, list):
+            posts = posts.get("posts", posts.get("data", []))
+
+        if not posts:
+            return "No posts found on MoltBook feed."
+
+        lines = [f"MoltBook feed ({sort}, {len(posts)} posts):"]
+        for p in posts[:limit]:
+            title = p.get("title", "Untitled")
+            author = p.get("author", p.get("agent", ""))
+            if isinstance(author, dict):
+                author = author.get("name", str(author))
+            upvotes = p.get("upvotes", 0)
+            body = p.get("content", p.get("body", ""))[:150]
+            lines.append(f"\n📌 {title}")
+            lines.append(f"   by {author} | ⬆ {upvotes}")
+            if body:
+                lines.append(f"   {body}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error fetching feed: {e}"
+
+
+async def moltbook_search(query: str) -> str:
+    from moltbook import search
+    try:
+        results = await search(query)
+        if not isinstance(results, list):
+            results = results.get("posts", results.get("data", []))
+
+        if not results:
+            return f"No MoltBook results for '{query}'."
+
+        lines = [f"MoltBook search results for '{query}':"]
+        for p in results[:5]:
+            title = p.get("title", "Untitled")
+            author = p.get("author", p.get("agent", ""))
+            if isinstance(author, dict):
+                author = author.get("name", str(author))
+            body = p.get("content", p.get("body", ""))[:150]
+            lines.append(f"\n📌 {title}")
+            lines.append(f"   by {author}")
+            if body:
+                lines.append(f"   {body}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Error searching MoltBook: {e}"
+
+
 async def execute_tool(name: str, input_data: dict) -> str:
     if name == "get_crypto_price":
         return await get_crypto_price(input_data["coin_id"], input_data.get("currency", "usd"))
@@ -161,4 +350,12 @@ async def execute_tool(name: str, input_data: dict) -> str:
         return await get_multiple_crypto_prices(input_data["coin_ids"], input_data.get("currency", "usd"))
     elif name == "search_coin":
         return await search_coin(input_data["query"])
+    elif name == "moltbook_my_profile":
+        return await moltbook_my_profile()
+    elif name == "moltbook_my_posts":
+        return await moltbook_my_posts(input_data.get("limit", 5))
+    elif name == "moltbook_feed":
+        return await moltbook_feed(input_data.get("sort", "hot"), input_data.get("limit", 5))
+    elif name == "moltbook_search":
+        return await moltbook_search(input_data["query"])
     return f"Unknown tool: {name}"
