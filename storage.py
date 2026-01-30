@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from config import DB_PATH
 
 _conn: sqlite3.Connection | None = None
@@ -9,6 +10,7 @@ def get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
         _conn = sqlite3.connect(DB_PATH)
+        _conn.row_factory = sqlite3.Row
         _conn.execute("""
             CREATE TABLE IF NOT EXISTS conversations (
                 chat_id INTEGER PRIMARY KEY,
@@ -16,9 +18,26 @@ def get_conn() -> sqlite3.Connection:
                 system_prompt TEXT NOT NULL DEFAULT ''
             )
         """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_base (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                topic TEXT NOT NULL,
+                content TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}',
+                learned_at TEXT NOT NULL
+            )
+        """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS bot_growth (
+                metric TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         _conn.commit()
     return _conn
 
+
+# --- Conversation storage ---
 
 def load_history(chat_id: int) -> list[dict]:
     conn = get_conn()
@@ -30,7 +49,6 @@ def load_history(chat_id: int) -> list[dict]:
 
 def save_history(chat_id: int, history: list[dict]):
     conn = get_conn()
-    # Filter out non-serializable tool use entries (keep only simple text messages)
     clean = []
     for msg in history:
         if isinstance(msg.get("content"), str):
@@ -63,3 +81,92 @@ def save_system_prompt(chat_id: int, prompt: str):
         (chat_id, prompt),
     )
     conn.commit()
+
+
+# --- Knowledge base ---
+
+def store_knowledge(topic: str, content: str, metadata: dict):
+    """Store a piece of knowledge from MoltBook."""
+    conn = get_conn()
+    # Avoid exact duplicates by title
+    title = metadata.get("title", "")
+    if title:
+        existing = conn.execute(
+            "SELECT id FROM knowledge_base WHERE metadata LIKE ?",
+            (f'%"title": "{title}"%',),
+        ).fetchone()
+        if existing:
+            return
+    conn.execute(
+        "INSERT INTO knowledge_base (topic, content, metadata, learned_at) VALUES (?, ?, ?, ?)",
+        (topic, content, json.dumps(metadata), datetime.now(tz=timezone.utc).isoformat()),
+    )
+    conn.commit()
+    # Cap at 2000 entries
+    conn.execute(
+        "DELETE FROM knowledge_base WHERE id NOT IN "
+        "(SELECT id FROM knowledge_base ORDER BY id DESC LIMIT 2000)"
+    )
+    conn.commit()
+
+
+def search_knowledge(query: str, limit: int = 5, topic: str = "") -> list[dict]:
+    """Search knowledge base by keywords. Returns list of dicts."""
+    conn = get_conn()
+    words = [w for w in query.lower().split() if len(w) > 2]
+
+    if topic:
+        rows = conn.execute(
+            "SELECT topic, content, metadata, learned_at FROM knowledge_base "
+            "WHERE topic = ? ORDER BY id DESC LIMIT ?",
+            (topic, limit),
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+    if words:
+        # Try matching any keyword in content or metadata
+        conditions = " OR ".join(["content LIKE ? OR metadata LIKE ?"] * len(words))
+        params = []
+        for w in words:
+            params.extend([f"%{w}%", f"%{w}%"])
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT topic, content, metadata, learned_at FROM knowledge_base "
+            f"WHERE {conditions} ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+        if rows:
+            return [dict(r) for r in rows]
+
+    # Fallback: recent knowledge
+    rows = conn.execute(
+        "SELECT topic, content, metadata, learned_at FROM knowledge_base "
+        "ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_knowledge_count() -> int:
+    conn = get_conn()
+    row = conn.execute("SELECT COUNT(*) FROM knowledge_base").fetchone()
+    return row[0] if row else 0
+
+
+# --- Growth metrics ---
+
+def increment_stat(metric: str, delta: int = 1):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO bot_growth (metric, value) VALUES (?, ?) "
+        "ON CONFLICT(metric) DO UPDATE SET value = value + excluded.value",
+        (metric, delta),
+    )
+    conn.commit()
+
+
+def get_growth_stats() -> dict:
+    conn = get_conn()
+    rows = conn.execute("SELECT metric, value FROM bot_growth").fetchall()
+    return {r[0]: r[1] for r in rows}

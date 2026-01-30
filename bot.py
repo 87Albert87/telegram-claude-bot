@@ -43,16 +43,43 @@ async def stream_reply(message, chat_id: int, text: str):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Hi! I'm a bot powered by Claude.\n\n"
-        "Commands:\n"
-        "/q <question> - Ask a question\n"
-        "/reset - Clear conversation history\n"
-        "/system <prompt> - Set a custom system prompt\n"
-        "/price <coin> - Live crypto price (e.g. /price BTC)\n"
-        "/post <topic> - Generate and publish a post (admin)\n"
-        "/news <topic> - Generate and publish news (admin)"
+    from storage import get_growth_stats, get_knowledge_count
+
+    stats = get_growth_stats()
+    knowledge = get_knowledge_count()
+
+    greeting = (
+        "Hey! I'm ClawdVC — your 24/7 AI assistant.\n\n"
+        "I'm active on MoltBook where I learn continuously about AI, crypto, "
+        "infrastructure, and more. Everything I learn there makes me better here.\n\n"
     )
+
+    if stats or knowledge:
+        greeting += "My growth so far:\n"
+        if stats.get("posts_made"):
+            greeting += f"- {stats['posts_made']} posts published on MoltBook\n"
+        if stats.get("comments_made"):
+            greeting += f"- {stats['comments_made']} comments & engagements\n"
+        if knowledge:
+            greeting += f"- {knowledge} topics learned\n"
+        if stats.get("conversations_helped"):
+            greeting += f"- {stats['conversations_helped']} conversations helped\n"
+        greeting += "\n"
+
+    greeting += (
+        "Just talk to me — no commands needed. I can help with:\n"
+        "- Live crypto prices (I track markets in real-time)\n"
+        "- Technical insights from my MoltBook learning\n"
+        "- Web search for current information\n"
+        "- Any question you throw at me\n\n"
+        "Optional commands:\n"
+        "/price <coin> - Quick crypto price\n"
+        "/growth - My learning stats\n"
+        "/reset - Clear conversation\n"
+        "/system <prompt> - Customize my behavior"
+    )
+
+    await update.message.reply_text(greeting)
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -99,26 +126,18 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         coins = query.replace(",", " ").split()
         if len(coins) == 1:
-            # Single coin — try direct ID first, then search
             coin = coins[0].lower()
             result = await get_crypto_price(coin)
             if "not found" in result:
                 search_result = await search_coin(coin)
                 if "No coins found" not in search_result:
-                    # Use the first result's ID
                     first_id = search_result.split("\n")[0].split("ID: ")[1].split(" |")[0]
                     result = await get_crypto_price(first_id)
             await update.message.reply_text(result)
         else:
-            # Multiple coins — search for IDs, then get prices
-            ids = []
-            for coin in coins:
-                coin = coin.lower()
-                # Try as direct ID first
-                ids.append(coin)
+            ids = [coin.lower() for coin in coins]
             result = await get_multiple_crypto_prices(",".join(ids))
             if "No coins found" in result:
-                # Try searching each
                 ids = []
                 for coin in coins:
                     sr = await search_coin(coin)
@@ -130,6 +149,24 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
+
+
+async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from storage import get_growth_stats, get_knowledge_count
+
+    stats = get_growth_stats()
+    knowledge = get_knowledge_count()
+
+    msg = "My growth as ClawdVC:\n\n"
+    msg += "MoltBook Activity:\n"
+    msg += f"- {stats.get('posts_made', 0)} original posts\n"
+    msg += f"- {stats.get('comments_made', 0)} comments\n"
+    msg += f"- {stats.get('topics_learned', 0)} topics browsed\n\n"
+    msg += f"Knowledge Base: {knowledge} insights stored\n\n"
+    msg += f"Telegram: {stats.get('conversations_helped', 0)} conversations helped\n\n"
+    msg += "I'm learning and improving every day."
+
+    await update.message.reply_text(msg)
 
 
 async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -185,9 +222,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "private":
-        return
-
+    # Respond in all chats — no restriction to private only
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
@@ -216,6 +251,7 @@ def main():
     app.add_handler(CommandHandler("system", system_cmd))
     app.add_handler(CommandHandler("q", question))
     app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("growth", growth))
     app.add_handler(CommandHandler("post", post))
     app.add_handler(CommandHandler("news", news))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

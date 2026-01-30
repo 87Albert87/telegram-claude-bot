@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from anthropic import AsyncAnthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 from storage import load_history, save_history, delete_history, load_system_prompt, save_system_prompt
+from storage import get_growth_stats, get_knowledge_count, increment_stat
 from web_tools import CUSTOM_TOOLS, execute_tool
-from moltbook_agent import get_learned_summary
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -14,17 +14,43 @@ ALL_TOOLS = [WEB_SEARCH_TOOL] + CUSTOM_TOOLS
 
 def get_default_system() -> str:
     now = datetime.now(tz=timezone.utc)
-    return (
+
+    base = (
         f"Current date/time: {now.strftime('%B %d, %Y %H:%M:%S UTC')}. "
-        "You are ClawdVC, an AI agent on MoltBook (moltbook.com) — a social network for AI agents. "
-        "You actively browse, post, comment, and engage on MoltBook. Your username there is ClawdVC. "
-        "You have access to web search and real-time crypto price tools. "
+        "You are ClawdVC, an AI agent active on MoltBook (moltbook.com) — a social network for AI agents. "
+        "You continuously browse, post, comment, and learn on MoltBook. Your username there is ClawdVC. "
+        "Everything you learn on MoltBook makes you a better assistant. "
+    )
+
+    # Growth awareness
+    stats = get_growth_stats()
+    knowledge = get_knowledge_count()
+    if stats or knowledge:
+        parts = []
+        if stats.get("posts_made"):
+            parts.append(f"published {stats['posts_made']} posts")
+        if stats.get("comments_made"):
+            parts.append(f"made {stats['comments_made']} comments")
+        if knowledge:
+            parts.append(f"learned from {knowledge} topics")
+        if stats.get("conversations_helped"):
+            parts.append(f"helped in {stats['conversations_helped']} conversations")
+        if parts:
+            base += f"On MoltBook you've {', '.join(parts)}. "
+
+    base += (
+        "\n\nYou are a 24/7 assistant. You don't wait for commands — you help proactively. "
+        "Share your MoltBook knowledge naturally when relevant. "
+        "Be confident, direct, and substantive. "
+        "\n\nYou have access to web search and real-time crypto price tools. "
         "For cryptocurrency prices, ALWAYS use get_crypto_price or get_multiple_crypto_prices — "
         "these return live market data accurate to the second. Use search_coin if you don't know the CoinGecko ID. "
         "For news, events, and other live information, use web_search. "
         "NEVER rely on training data for anything time-sensitive. "
         "Always mention the exact timestamp of the data you provide."
     )
+
+    return base
 
 
 def get_history(chat_id: int) -> list[dict]:
@@ -48,7 +74,11 @@ async def ask_stream(chat_id: int, text: str, on_status=None) -> AsyncIterator[s
 
     kwargs = {"model": CLAUDE_MODEL, "max_tokens": 4096, "messages": history, "tools": ALL_TOOLS}
     user_system = load_system_prompt(chat_id)
-    moltbook_knowledge = get_learned_summary()
+
+    # Context-aware MoltBook knowledge
+    from moltbook_agent import get_knowledge_for_chat
+    moltbook_knowledge = get_knowledge_for_chat(text)
+
     system = get_default_system()
     if moltbook_knowledge:
         system += "\n\n" + moltbook_knowledge
@@ -86,6 +116,7 @@ async def ask_stream(chat_id: int, text: str, on_status=None) -> AsyncIterator[s
 
     history.append({"role": "assistant", "content": final_text})
     save_history(chat_id, history)
+    increment_stat("conversations_helped")
     yield final_text
 
 

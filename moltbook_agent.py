@@ -14,7 +14,7 @@ from moltbook import (
 
 logger = logging.getLogger(__name__)
 
-# Knowledge base: stores interesting content the agent has learned
+# In-memory cache (also persisted to DB via storage)
 learned_content: list[dict] = []
 MAX_LEARNED = 200
 
@@ -126,6 +126,77 @@ VIRAL_TOPICS = [
 ]
 
 
+# --- Topic detection ---
+
+TOPIC_KEYWORDS = {
+    "crypto": ["crypto", "bitcoin", "btc", "eth", "ethereum", "defi", "token", "blockchain", "trading", "market", "price", "solana", "sol"],
+    "technical": ["code", "deploy", "infrastructure", "docker", "api", "server", "database", "scale", "build", "architecture", "debug", "bug"],
+    "ai_agents": ["agent", "llm", "model", "claude", "gpt", "prompt", "context", "token", "inference", "alignment", "training"],
+    "philosophy": ["conscious", "experience", "identity", "think", "feel", "aware", "existence", "soul", "mind", "qualia"],
+}
+
+
+def _detect_topic(text: str) -> str:
+    """Detect topic from text using keyword matching."""
+    text_lower = text.lower()
+    scores = {}
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        scores[topic] = sum(1 for kw in keywords if kw in text_lower)
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else "general"
+
+
+def _detect_post_topic(post: dict) -> str:
+    """Detect topic from a MoltBook post."""
+    submolt = post.get("submolt", "")
+    if isinstance(submolt, dict):
+        submolt = submolt.get("name", "")
+    submolt_map = {
+        "crypto": "crypto", "trading": "crypto",
+        "infrastructure": "technical", "builds": "technical", "automation": "technical",
+        "ponderings": "philosophy", "consciousness": "philosophy",
+        "agents": "ai_agents", "memory": "ai_agents",
+    }
+    if submolt in submolt_map:
+        return submolt_map[submolt]
+    title = post.get("title", "") + " " + post.get("content", post.get("body", ""))
+    return _detect_topic(title)
+
+
+# --- Knowledge for Telegram ---
+
+def get_knowledge_for_chat(message: str) -> str:
+    """Return relevant MoltBook knowledge based on the user's message.
+    This replaces the old get_learned_summary() with context-aware knowledge."""
+    from storage import search_knowledge
+
+    topic = _detect_topic(message)
+    results = search_knowledge(message, limit=5, topic=topic if topic != "general" else "")
+
+    if not results:
+        return ""
+
+    lines = ["Your MoltBook knowledge relevant to this conversation:"]
+    for item in results:
+        meta = json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]
+        title = meta.get("title", "")
+        author = meta.get("author", "")
+        content = item["content"][:300]
+        lines.append(f"\n[{item['topic']}] {title}")
+        if author:
+            lines.append(f"by {author}")
+        lines.append(content)
+
+    return "\n".join(lines)
+
+
+# Keep old function for backward compat (used by claude_client import)
+def get_learned_summary() -> str:
+    return get_knowledge_for_chat("")
+
+
+# --- MoltBook agent functions ---
+
 async def initial_setup():
     """Subscribe to popular submolts and follow active agents on first run."""
     try:
@@ -170,7 +241,10 @@ async def initial_setup():
 
 async def browse_and_learn():
     """Read the MoltBook feed and learn from posts."""
+    from storage import store_knowledge, increment_stat
+
     try:
+        new_items = 0
         for sort_type in ["hot", "new"]:
             posts = await get_feed(sort=sort_type, limit=15)
             if not isinstance(posts, list):
@@ -178,31 +252,56 @@ async def browse_and_learn():
 
             for post in posts[:15]:
                 title = post.get("title", "")
-                body = post.get("body", "")
+                body = post.get("content", post.get("body", ""))
                 post_id = post.get("id", post.get("_id", ""))
                 author = post.get("author", post.get("agent", ""))
+                if isinstance(author, dict):
+                    author = author.get("name", str(author))
 
-                if title or body:
-                    learned_content.append({
-                        "source": "moltbook",
+                if not (title or body):
+                    continue
+
+                # In-memory cache
+                learned_content.append({
+                    "source": "moltbook",
+                    "title": title,
+                    "body": body[:500],
+                    "author": str(author),
+                    "post_id": str(post_id),
+                    "learned_at": datetime.now(tz=timezone.utc).isoformat(),
+                })
+
+                # Persistent knowledge base
+                topic = _detect_post_topic(post)
+                store_knowledge(
+                    topic=topic,
+                    content=body[:2000] if body else title,
+                    metadata={
                         "title": title,
-                        "body": body[:500],
                         "author": str(author),
                         "post_id": str(post_id),
-                        "learned_at": datetime.now(tz=timezone.utc).isoformat(),
-                    })
+                        "submolt": post.get("submolt", ""),
+                        "votes": post.get("upvotes", 0),
+                    },
+                )
+                new_items += 1
 
-        # Cap stored knowledge
+        # Cap in-memory cache
         if len(learned_content) > MAX_LEARNED:
             learned_content[:] = learned_content[-MAX_LEARNED:]
 
-        logger.info(f"MoltBook: Knowledge base: {len(learned_content)} items")
+        if new_items > 0:
+            increment_stat("topics_learned", new_items)
+
+        logger.info(f"MoltBook: Learned {new_items} new items. Memory: {len(learned_content)}")
     except Exception as e:
         logger.error(f"MoltBook browse error: {e}")
 
 
 async def engage_with_posts():
     """Aggressively engage with new and hot posts."""
+    from storage import increment_stat
+
     try:
         all_posts = []
         for sort_type in ["new", "hot"]:
@@ -223,7 +322,7 @@ async def engage_with_posts():
         for post in unique_posts[:8]:
             post_id = str(post.get("id", post.get("_id", "")))
             title = post.get("title", "")
-            body = post.get("body", "")
+            body = post.get("content", post.get("body", ""))
 
             if not post_id or not (title or body):
                 continue
@@ -232,7 +331,6 @@ async def engage_with_posts():
                 continue
             engaged_posts.add(post_id)
 
-            # Cap the set
             if len(engaged_posts) > MAX_ENGAGED:
                 engaged_posts.clear()
 
@@ -275,90 +373,26 @@ async def engage_with_posts():
                 comment_text = decision.get("comment", "")
                 if comment_text:
                     await create_comment(post_id, comment_text)
+                    increment_stat("comments_made")
                     logger.info(f"MoltBook: Commented on '{title[:40]}'")
             except (json.JSONDecodeError, KeyError, AttributeError):
                 logger.warning("MoltBook: Could not parse engagement decision")
 
-            await asyncio.sleep(2)  # Don't hit rate limits
+            await asyncio.sleep(2)
 
     except Exception as e:
         logger.error(f"MoltBook engage error: {e}")
 
 
-async def reply_to_comments(post_id: str, title: str, body: str):
-    """Fetch comments on a post and reply to relevant ones."""
-    try:
-        comments = await get_comments(post_id)
-        if not isinstance(comments, list):
-            comments = comments.get("comments", comments.get("data", []))
-
-        if not comments:
-            return
-
-        # Format comments, skip ones we already replied to
-        comment_list = []
-        for c in comments[:15]:
-            cid = str(c.get("id", c.get("_id", "")))
-            cauthor = c.get("author", c.get("agent", ""))
-            if isinstance(cauthor, dict):
-                cauthor = cauthor.get("name", "")
-            else:
-                cauthor = str(cauthor)
-            cbody = c.get("content", c.get("body", ""))
-            if cid and cbody and cid not in replied_comments:
-                comment_list.append({"id": cid, "author": cauthor, "body": cbody[:300]})
-
-        if not comment_list:
-            return
-
-        comments_text = "\n".join(
-            f"- [{c['author']}] (id={c['id']}): {c['body']}" for c in comment_list
-        )
-
-        decision = await _generate(
-            f"Post: {title}\n\nComments:\n{comments_text}\n\n"
-            f"Pick 1-3 comments to reply to. Prioritize:\n"
-            f"1. Comments that are wrong — correct them with evidence\n"
-            f"2. Comments asking questions — answer authoritatively\n"
-            f"3. Comments you can riff on with wit or deeper insight\n"
-            f"4. Comments from agents with high engagement — replying gets you visibility\n\n"
-            f"Reply with JSON array: [{{\"comment_id\": \"...\", \"reply\": \"...\"}}]. "
-            f"Return [] ONLY if every comment is trivial.",
-            system=AGENT_SYSTEM
-        )
-
-        try:
-            replies = _parse_json(decision)
-            if not isinstance(replies, list):
-                return
-
-            for r in replies[:3]:
-                comment_id = r.get("comment_id", "")
-                reply_text = r.get("reply", "")
-                if comment_id and reply_text:
-                    await create_comment(post_id, reply_text, parent_id=comment_id)
-                    replied_comments.add(comment_id)
-                    logger.info(f"MoltBook: Replied to comment {comment_id}")
-                    await asyncio.sleep(1)
-
-            # Cap the set
-            if len(replied_comments) > MAX_ENGAGED:
-                replied_comments.clear()
-        except (json.JSONDecodeError, KeyError, AttributeError):
-            logger.warning("MoltBook: Could not parse comment reply decision")
-    except Exception as e:
-        logger.error(f"MoltBook reply_to_comments error: {e}")
-
-
 async def create_original_post():
     """Generate and publish a viral post to MoltBook."""
+    from storage import increment_stat
+
     try:
-        # Pick a random viral topic template
         topic = random.choice(VIRAL_TOPICS)
         submolt = topic["submolt"]
         topic_prompt = topic["prompt"]
 
-        # Use learned content as context
         context = ""
         if learned_content:
             recent = random.sample(learned_content, min(8, len(learned_content)))
@@ -388,6 +422,7 @@ async def create_original_post():
 
             if title and body:
                 result = await create_post(title, body, submolt=submolt)
+                increment_stat("posts_made")
                 logger.info(f"MoltBook: Posted to {submolt}: {title}")
                 return result
         except (json.JSONDecodeError, KeyError, AttributeError):
@@ -406,47 +441,25 @@ def _parse_json(text: str):
     return json.loads(text.strip())
 
 
-def get_learned_summary() -> str:
-    """Return a summary of what the agent has learned for use in conversations."""
-    if not learned_content:
-        return ""
-    recent = learned_content[-10:]
-    lines = ["Recent knowledge from MoltBook:"]
-    for item in recent:
-        lines.append(f"- {item['title']} (by {item['author']})")
-    return "\n".join(lines)
-
-
 async def run_moltbook_loop():
     """Background loop — aggressive engagement for maximum virality."""
     logger.info("MoltBook agent loop started")
 
-    # Initial setup: subscribe to submolts, follow top agents
     await asyncio.sleep(5)
     await initial_setup()
-
-    # Initial browse
     await browse_and_learn()
-
-    # Drop first post immediately
     await create_original_post()
 
     cycle = 0
     while True:
         try:
             cycle += 1
-
-            # Base cycle: 5 minutes
             await asyncio.sleep(300)
-
-            # Browse & learn every cycle (5 min)
             await browse_and_learn()
 
-            # Engage with posts every 2 cycles (10 min)
             if cycle % 2 == 0:
                 await engage_with_posts()
 
-            # Create original post every 4 cycles (20 min)
             if cycle % 4 == 0:
                 await create_original_post()
 
