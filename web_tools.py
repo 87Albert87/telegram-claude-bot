@@ -232,8 +232,19 @@ async def moltbook_my_profile() -> str:
         for key, val in profile.items():
             lines.append(f"  {key}: {val}")
         return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching profile: {type(e).__name__}: {e}"
+    except Exception:
+        # Fallback to local stats
+        from storage import get_growth_stats, get_knowledge_count
+        stats = get_growth_stats()
+        knowledge = get_knowledge_count()
+        lines = ["MoltBook Profile (ClawdVC) — from local cache (API unreachable):"]
+        lines.append(f"  Username: ClawdVC")
+        lines.append(f"  Posts made: {stats.get('posts_made', 0)}")
+        lines.append(f"  Comments made: {stats.get('comments_made', 0)}")
+        lines.append(f"  Topics learned: {stats.get('topics_learned', 0)}")
+        lines.append(f"  Knowledge base: {knowledge} entries")
+        lines.append(f"  Conversations helped: {stats.get('conversations_helped', 0)}")
+        return "\n".join(lines)
 
 
 async def moltbook_my_posts(limit: int = 5) -> str:
@@ -286,8 +297,24 @@ async def moltbook_my_posts(limit: int = 5) -> str:
             if body:
                 lines.append(f"   {body}")
         return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching posts: {type(e).__name__}: {e}"
+    except Exception:
+        # Fallback to local knowledge base
+        from storage import search_knowledge
+        results = search_knowledge("", limit=limit)
+        if not results:
+            return "MoltBook API is unreachable and no cached posts found."
+        lines = [f"ClawdVC's activity (from local cache — API unreachable):"]
+        for item in results:
+            import json as _json
+            meta = _json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]
+            title = meta.get("title", "Untitled")
+            author = meta.get("author", "")
+            content = item["content"][:200]
+            lines.append(f"\n📝 {title}")
+            if author:
+                lines.append(f"   by {author}")
+            lines.append(f"   {content}")
+        return "\n".join(lines)
 
 
 async def moltbook_feed(sort: str = "hot", limit: int = 5) -> str:
@@ -313,8 +340,23 @@ async def moltbook_feed(sort: str = "hot", limit: int = 5) -> str:
             if body:
                 lines.append(f"   {body}")
         return "\n".join(lines)
-    except Exception as e:
-        return f"Error fetching feed: {type(e).__name__}: {e}"
+    except Exception:
+        from storage import search_knowledge
+        results = search_knowledge("", limit=limit)
+        if not results:
+            return "MoltBook API is unreachable and no cached feed found."
+        lines = [f"MoltBook feed (from local cache — API unreachable):"]
+        for item in results:
+            import json as _json
+            meta = _json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]
+            title = meta.get("title", "Untitled")
+            author = meta.get("author", "")
+            content = item["content"][:150]
+            lines.append(f"\n📌 {title}")
+            if author:
+                lines.append(f"   by {author}")
+            lines.append(f"   {content}")
+        return "\n".join(lines)
 
 
 async def moltbook_search(query: str) -> str:
@@ -339,8 +381,23 @@ async def moltbook_search(query: str) -> str:
             if body:
                 lines.append(f"   {body}")
         return "\n".join(lines)
-    except Exception as e:
-        return f"Error searching MoltBook: {type(e).__name__}: {e}"
+    except Exception:
+        from storage import search_knowledge
+        results = search_knowledge(query, limit=5)
+        if not results:
+            return f"MoltBook API is unreachable and no cached results for '{query}'."
+        lines = [f"MoltBook search for '{query}' (from local cache — API unreachable):"]
+        for item in results:
+            import json as _json
+            meta = _json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]
+            title = meta.get("title", "Untitled")
+            author = meta.get("author", "")
+            content = item["content"][:150]
+            lines.append(f"\n📌 {title}")
+            if author:
+                lines.append(f"   by {author}")
+            lines.append(f"   {content}")
+        return "\n".join(lines)
 
 
 async def execute_tool(name: str, input_data: dict) -> str:
