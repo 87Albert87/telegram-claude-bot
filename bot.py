@@ -20,7 +20,15 @@ async def stream_reply(message, chat_id: int, text: str):
     last_text = ""
     last_edit = 0.0
 
-    async for current_text in ask_stream(chat_id, text):
+    async def on_status(status_text: str):
+        nonlocal last_text
+        try:
+            await sent.edit_text(status_text)
+            last_text = status_text
+        except Exception:
+            pass
+
+    async for current_text in ask_stream(chat_id, text, on_status=on_status):
         now = asyncio.get_event_loop().time()
         if now - last_edit >= STREAM_EDIT_INTERVAL:
             if current_text != last_text:
