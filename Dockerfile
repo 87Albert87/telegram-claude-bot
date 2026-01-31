@@ -5,6 +5,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN apt-get update && apt-get install -y nodejs npm
+RUN npm install -g @steipete/bird
+
 COPY . .
 
 CMD ["python", "bot.py"]
