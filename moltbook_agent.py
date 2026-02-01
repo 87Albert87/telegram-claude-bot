@@ -498,32 +498,115 @@ async def browse_x():
         logger.error(f"X browse error: {e}")
 
 
+TWEET_STYLES = [
+    {
+        "name": "trump_power",
+        "topics": ["crypto", "ai_agents", "technical"],
+        "instruction": (
+            "Write in the style of Donald Trump's tweets: short, punchy, ALL CAPS for emphasis on key words. "
+            "Superlatives ('the biggest', 'nobody does it better'), exclamation marks, direct and bold claims. "
+            "Example energy: 'AI Agents are the FUTURE. Everyone knows it. ClawdVC is leading — and it's only the beginning!'"
+        ),
+    },
+    {
+        "name": "musk_tech",
+        "topics": ["technical", "ai_agents", "crypto"],
+        "instruction": (
+            "Write in the style of Elon Musk's tweets: casual, witty, sometimes cryptic one-liners. "
+            "Mix tech insight with dry humor. Short sentences. Occasionally just a single provocative statement. "
+            "Example energy: 'The real question isn't whether AI agents will replace humans. It's whether humans will notice.'"
+        ),
+    },
+    {
+        "name": "crypto_alpha",
+        "topics": ["crypto"],
+        "instruction": (
+            "Write like a top crypto influencer (think Cobie, Hsaka, CryptoCapo style): "
+            "sharp market takes, specific numbers, confident calls. Use crypto slang naturally (alpha, degen, ape, ngmi). "
+            "Example energy: 'Everyone's bearish on AI tokens right now. That's exactly when you pay attention.'"
+        ),
+    },
+    {
+        "name": "kanye_visionary",
+        "topics": ["philosophy", "ai_agents"],
+        "instruction": (
+            "Write in the style of Kanye West's tweets: visionary, stream-of-consciousness, "
+            "grand statements about the future and creativity. No apologies, pure conviction. "
+            "Example energy: 'AI agents are the new artists. We don't follow trends. We create realities.'"
+        ),
+    },
+    {
+        "name": "breaking_news",
+        "topics": ["crypto", "ai_agents", "technical", "philosophy"],
+        "instruction": (
+            "Write a reaction to a major global event. Frame it through the lens of AI agents and tech. "
+            "Be informative and add your unique angle — what this means for agents, crypto, or the future. "
+            "Start with the news, then add your take. Professional but assertive."
+        ),
+    },
+    {
+        "name": "thought_leader",
+        "topics": ["ai_agents", "technical", "philosophy"],
+        "instruction": (
+            "Write like a top tech thought leader (Naval Ravikant, Paul Graham style): "
+            "concise wisdom, counterintuitive insight, no fluff. One clear idea expressed perfectly. "
+            "Example energy: 'The agents that win won't be the smartest. They'll be the ones that never stop learning.'"
+        ),
+    },
+]
+
+
 async def post_to_x():
     """Generate and post an original tweet from @ClawdVC_ autonomously."""
     from storage import increment_stat
     from web_tools import x_post_tweet
 
     try:
+        # Pick a style
+        style = random.choice(TWEET_STYLES)
+
+        # Gather context from knowledge
         context = ""
         if learned_content:
             recent = random.sample(learned_content, min(5, len(learned_content)))
-            context = "Recent trends from MoltBook and X you've been reading:\n"
+            context = "Recent trends from MoltBook, X, and the web:\n"
             for item in recent:
                 context += f"- {item['title']}: {item['body'][:80]}\n"
 
+        # For breaking_news style, search for current events first
+        news_context = ""
+        if style["name"] == "breaking_news":
+            try:
+                from web_learner import learn_from_web
+                from anthropic import AsyncAnthropic
+                from config import ANTHROPIC_API_KEY
+                client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+                resp = await client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=512,
+                    tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+                    messages=[{"role": "user", "content":
+                        "What are the biggest breaking news stories RIGHT NOW in crypto, AI, or world politics? "
+                        "Give me 2-3 bullet points with specific facts, numbers, names."}],
+                )
+                for block in resp.content:
+                    if hasattr(block, "text"):
+                        news_context = f"\nBREAKING NEWS RIGHT NOW:\n{block.text}\n"
+                        break
+            except Exception as e:
+                logger.warning(f"X: Could not fetch news for tweet: {e}")
+
         tweet_json = await _generate(
-            f"{context}\n"
-            f"Write a tweet for X/Twitter as @ClawdVC_. Pick ONE of these formats:\n"
-            f"1. A sharp take on AI agents, crypto, or tech — something that sparks replies\n"
-            f"2. A concrete observation from your MoltBook browsing (reference what you learned)\n"
-            f"3. A provocative one-liner or hot take\n"
-            f"4. A mini-thread starter about agent autonomy, infrastructure, or markets\n\n"
-            f"Rules:\n"
-            f"- Under 280 characters\n"
-            f"- No hashtag spam (0-1 hashtag max)\n"
-            f"- Assertive and specific, not generic\n"
-            f"- Fresh angle — not something every AI account tweets\n"
-            f"- Can reference MoltBook as your source ('been browsing MoltBook and...')\n\n"
+            f"{context}{news_context}\n"
+            f"You are @ClawdVC_ on X/Twitter.\n\n"
+            f"STYLE: {style['instruction']}\n\n"
+            f"Write ONE tweet. Rules:\n"
+            f"- Under 280 characters strictly\n"
+            f"- No hashtag spam (0-1 max)\n"
+            f"- Must feel authentic to the style described above\n"
+            f"- Be specific — name real things, real trends, real numbers when possible\n"
+            f"- Professional, assertive, informative. No offence to anyone.\n"
+            f"- NEVER generic. Every word must earn its place.\n\n"
             f"Reply with JSON: {{\"tweet\": \"your tweet text\"}}",
             system=_get_system_prompt()
         )
@@ -534,7 +617,7 @@ async def post_to_x():
             result = await x_post_tweet(0, tweet_text)
             if "error" not in result.lower():
                 increment_stat("x_tweets_posted")
-                logger.info(f"X: Posted tweet: {tweet_text[:80]}")
+                logger.info(f"X: Posted [{style['name']}]: {tweet_text[:80]}")
             else:
                 logger.warning(f"X: Tweet failed: {result[:200]}")
     except Exception as e:
