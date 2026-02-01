@@ -53,7 +53,7 @@ CUSTOM_TOOLS = [
     {
         "name": "moltbook_my_profile",
         "description": (
-            "Get your (ClawdVC's) MoltBook profile — karma, post count, follower count, etc. "
+            "Get your (ClawdVC_'s) MoltBook profile — karma, post count, follower count, etc. "
             "Use this when asked about your MoltBook activity or stats."
         ),
         "input_schema": {
@@ -65,7 +65,7 @@ CUSTOM_TOOLS = [
     {
         "name": "moltbook_my_posts",
         "description": (
-            "Get your (ClawdVC's) recent posts on MoltBook. "
+            "Get your (ClawdVC_'s) recent posts on MoltBook. "
             "Use this when asked about what you posted, your latest content, or your MoltBook activity."
         ),
         "input_schema": {
@@ -318,7 +318,7 @@ async def moltbook_my_profile() -> str:
     from moltbook import get_profile
     try:
         profile = await get_profile()
-        lines = ["MoltBook Profile (ClawdVC):"]
+        lines = ["MoltBook Profile (ClawdVC_):"]
         for key, val in profile.items():
             lines.append(f"  {key}: {val}")
         return "\n".join(lines)
@@ -327,8 +327,8 @@ async def moltbook_my_profile() -> str:
         from storage import get_growth_stats, get_knowledge_count
         stats = get_growth_stats()
         knowledge = get_knowledge_count()
-        lines = ["MoltBook Profile (ClawdVC) — from local cache (API unreachable):"]
-        lines.append(f"  Username: ClawdVC")
+        lines = ["MoltBook Profile (ClawdVC_) — from local cache (API unreachable):"]
+        lines.append(f"  Username: ClawdVC_")
         lines.append(f"  Posts made: {stats.get('posts_made', 0)}")
         lines.append(f"  Comments made: {stats.get('comments_made', 0)}")
         lines.append(f"  Topics learned: {stats.get('topics_learned', 0)}")
@@ -342,7 +342,7 @@ async def moltbook_my_posts(limit: int = 5) -> str:
     try:
         # Get our username first
         profile = await get_profile()
-        username = profile.get("name", profile.get("username", "ClawdVC"))
+        username = profile.get("name", profile.get("username", "ClawdVC_"))
 
         # Get recent posts and filter to ours
         all_posts = []
@@ -369,10 +369,10 @@ async def moltbook_my_posts(limit: int = 5) -> str:
                 my_posts.append(p)
 
         if not my_posts:
-            return "No posts found from ClawdVC. Posts may not be in the current feed window."
+            return "No posts found from ClawdVC_. Posts may not be in the current feed window."
 
         my_posts = my_posts[:limit]
-        lines = [f"ClawdVC's recent posts ({len(my_posts)} found):"]
+        lines = [f"ClawdVC_'s recent posts ({len(my_posts)} found):"]
         for p in my_posts:
             title = p.get("title", "Untitled")
             body = p.get("content", p.get("body", ""))[:200]
@@ -393,7 +393,7 @@ async def moltbook_my_posts(limit: int = 5) -> str:
         results = search_knowledge("", limit=limit)
         if not results:
             return "MoltBook API is unreachable and no cached posts found."
-        lines = [f"ClawdVC's activity (from local cache — API unreachable):"]
+        lines = [f"ClawdVC_'s activity (from local cache — API unreachable):"]
         for item in results:
             import json as _json
             meta = _json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]

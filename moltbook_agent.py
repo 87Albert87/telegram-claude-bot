@@ -460,7 +460,7 @@ async def run_moltbook_loop():
     while True:
         try:
             cycle += 1
-            await asyncio.sleep(900)
+            await asyncio.sleep(600)
             await browse_and_learn()
 
             if cycle % 2 == 0:
