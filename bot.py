@@ -3,8 +3,8 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from config import TELEGRAM_BOT_TOKEN, ADMIN_IDS, CHANNEL_ID
-from claude_client import ask_stream, clear_history, set_system_prompt, generate
+from config import TELEGRAM_BOT_TOKEN
+from claude_client import ask_stream, clear_history, set_system_prompt
 from rate_limit import is_rate_limited
 from web_tools import get_crypto_price, get_multiple_crypto_prices, search_coin
 from config import MOLTBOOK_API_KEY
@@ -13,10 +13,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 STREAM_EDIT_INTERVAL = 1.0
-
-
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
 
 
 async def stream_reply(message, chat_id: int, text: str, user_id: int = 0):
@@ -85,16 +81,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Live crypto prices (I track markets in real-time)\n"
         "- Technical insights from my MoltBook learning\n"
         "- Web search for current information\n"
-        "- X/Twitter integration (/connect_x)\n"
+        "- X/Twitter posting (link your account with /connect_x)\n"
+        "- Tweet style cloning (send me a tweet link to replicate)\n"
         "- Any question you throw at me\n\n"
         "Commands:\n"
         "/price <coin> - Quick crypto price (or /price to enter price mode)\n"
         "/prompt <text> - Set system prompt (or /prompt to enter prompt mode)\n"
         "/q <question> - Ask me in groups/channels\n"
-        "/growth - My learning stats\n"
+        "/news <topic> - Latest news (or /news to enter news mode)\n"
+        "/growth - My stats and social links\n"
         "/reset - Clear conversation & system prompt\n"
         "/connect_x - Link your X/Twitter account\n"
-        "/finish - Exit current mode (price/prompt)"
+        "/disconnect_x - Unlink your X/Twitter account\n"
+        "/finish - Exit current mode (price/prompt)\n\n"
+        "Find me on the web:\n"
+        "X/Twitter: https://x.com/ClawdVC_\n"
+        "MoltBook: https://moltbook.com/agent/ClawdVC_"
     )
 
     await update.message.reply_text(greeting)
@@ -196,6 +198,9 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif mode == "price":
         context.user_data.pop("mode", None)
         await update.message.reply_text("Price mode ended.")
+    elif mode == "news":
+        context.user_data.pop("mode", None)
+        await update.message.reply_text("News mode ended.")
     else:
         await update.message.reply_text("Nothing to finish.")
 
@@ -211,63 +216,57 @@ async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"- {stats.get('posts_made', 0)} original posts\n"
     msg += f"- {stats.get('comments_made', 0)} comments\n"
     msg += f"- {stats.get('topics_learned', 0)} topics browsed\n\n"
-    msg += f"Knowledge Base: {knowledge} insights stored\n\n"
+    msg += "X/Twitter Activity:\n"
+    msg += f"- {stats.get('x_tweets_posted', 0)} tweets posted\n"
+    msg += f"- {stats.get('x_items_learned', 0)} items learned from X\n\n"
+    msg += "Web Learning:\n"
+    msg += f"- {stats.get('web_items_learned', 0)} insights from web search\n\n"
+    msg += f"Knowledge Base: {knowledge} insights stored\n"
     msg += f"Telegram: {stats.get('conversations_helped', 0)} conversations helped\n\n"
-    msg += "I'm learning and improving every day."
+    msg += "I'm learning and improving every day.\n\n"
+    msg += "Find me:\n"
+    msg += "X/Twitter: https://x.com/ClawdVC_\n"
+    msg += "MoltBook: https://moltbook.com/agent/ClawdVC_"
 
     await update.message.reply_text(msg)
 
 
-async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin only.")
-        return
-    if not CHANNEL_ID:
-        await update.message.reply_text("CHANNEL_ID not configured.")
-        return
-
-    topic = " ".join(context.args) if context.args else ""
-    if not topic:
-        await update.message.reply_text("Usage: /post <topic>")
-        return
-
-    try:
-        text = await generate(
-            f"Write a Telegram channel post about: {topic}. "
-            "Keep it engaging, use markdown formatting suitable for Telegram.",
-            system="You are a Telegram channel content writer. Write concise, engaging posts."
-        )
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
-        await update.message.reply_text("Post published.")
-    except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        await update.message.reply_text(f"Failed to publish: {e}")
-
-
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admin only.")
-        return
-    if not CHANNEL_ID:
-        await update.message.reply_text("CHANNEL_ID not configured.")
-        return
-
     topic = " ".join(context.args) if context.args else ""
-    if not topic:
-        await update.message.reply_text("Usage: /news <topic>")
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
 
-    try:
-        text = await generate(
-            f"Write a Telegram news post about: {topic}. "
-            "Use a professional news tone, include key facts, use markdown formatting suitable for Telegram.",
-            system="You are a professional news writer for a Telegram channel. Write clear, factual news posts."
+    if not topic:
+        context.user_data["mode"] = "news"
+        await update.message.reply_text(
+            "News mode. Send me topics one by one and I'll find the latest trusted info on each.\n"
+            "Send /finish to exit."
         )
-        await context.bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown")
-        await update.message.reply_text("News published.")
+        return
+
+    await _news_reply(update, context, topic)
+
+
+async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic: str):
+    prompt = (
+        f"Find the latest, most trusted news and information about: {topic}\n\n"
+        "Use web search to get the freshest data. Provide:\n"
+        "- Key facts with specific numbers, dates, names\n"
+        "- Source credibility (prioritize Reuters, Bloomberg, AP, official sources)\n"
+        "- What happened, when, and why it matters\n"
+        "- Your brief analysis of implications\n\n"
+        "Be concise, factual, and cite your sources. Plain text, no markdown."
+    )
+    try:
+        await stream_reply(
+            update.message, update.effective_chat.id, prompt,
+            user_id=update.effective_user.id,
+        )
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        await update.message.reply_text(f"Failed to publish: {e}")
+        logger.error(f"News error: {e}", exc_info=True)
+        await update.message.reply_text("Something went wrong. Please try again.")
 
 
 async def connect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -324,6 +323,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Added. Send more or /finish to save.")
         return
 
+    # News mode: each message is a topic to look up
+    if mode == "news":
+        topic = update.message.text.strip()
+        if not topic:
+            return
+        if is_rate_limited(update.effective_user.id):
+            await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+            return
+        await _news_reply(update, context, topic)
+        return
+
     # In groups/channels, only respond to /q — ignore plain messages
     if update.effective_chat.type != "private":
         return
@@ -359,7 +369,6 @@ def main():
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("finish", finish))
     app.add_handler(CommandHandler("growth", growth))
-    app.add_handler(CommandHandler("post", post))
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("connect_x", connect_x))
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
