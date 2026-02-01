@@ -33,6 +33,14 @@ def get_conn() -> sqlite3.Connection:
                 value INTEGER NOT NULL DEFAULT 0
             )
         """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS x_accounts (
+                user_id INTEGER PRIMARY KEY,
+                auth_token TEXT NOT NULL,
+                ct0 TEXT NOT NULL,
+                connected_at TEXT NOT NULL
+            )
+        """)
         _conn.commit()
     return _conn
 
@@ -170,3 +178,29 @@ def get_growth_stats() -> dict:
     conn = get_conn()
     rows = conn.execute("SELECT metric, value FROM bot_growth").fetchall()
     return {r[0]: r[1] for r in rows}
+
+
+# --- X/Twitter accounts ---
+
+def save_x_cookies(user_id: int, auth_token: str, ct0: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO x_accounts (user_id, auth_token, ct0, connected_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET auth_token = excluded.auth_token, ct0 = excluded.ct0, connected_at = excluded.connected_at",
+        (user_id, auth_token, ct0, datetime.now(tz=timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_x_cookies(user_id: int) -> dict | None:
+    conn = get_conn()
+    row = conn.execute("SELECT auth_token, ct0 FROM x_accounts WHERE user_id = ?", (user_id,)).fetchone()
+    if row:
+        return {"auth_token": row[0], "ct0": row[1]}
+    return None
+
+
+def delete_x_cookies(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM x_accounts WHERE user_id = ?", (user_id,))
+    conn.commit()

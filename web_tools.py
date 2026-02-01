@@ -1,3 +1,5 @@
+import asyncio
+import os
 import httpx
 from datetime import datetime, timezone
 
@@ -133,6 +135,94 @@ CUSTOM_TOOLS = [
                 }
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "x_home_timeline",
+        "description": (
+            "Get the user's X/Twitter home timeline (recent tweets from people they follow). "
+            "Use this when the user asks about their X/Twitter feed or timeline. "
+            "Requires the user to have connected their X account via /connect_x."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "Number of tweets to fetch (default: 10)",
+                    "default": 10
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "x_read_post",
+        "description": (
+            "Read a specific tweet or thread on X/Twitter by URL or tweet ID. "
+            "Use this when the user shares an X/Twitter link or asks to read a specific tweet."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Tweet URL or tweet ID"
+                }
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "x_post_tweet",
+        "description": (
+            "Post a new tweet on X/Twitter from the user's account. "
+            "Use this when the user asks to tweet or post something on X. "
+            "Requires the user to have connected their X account via /connect_x."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The tweet text to post"
+                }
+            },
+            "required": ["text"]
+        }
+    },
+    {
+        "name": "x_search",
+        "description": (
+            "Search for tweets on X/Twitter. "
+            "Use this when the user asks to find tweets about a topic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of results (default: 10)",
+                    "default": 10
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "x_whoami",
+        "description": (
+            "Check which X/Twitter account is connected. "
+            "Use this when the user asks about their connected X account."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
         }
     }
 ]
@@ -400,7 +490,50 @@ async def moltbook_search(query: str) -> str:
         return "\n".join(lines)
 
 
-async def execute_tool(name: str, input_data: dict) -> str:
+async def _run_bird(user_id: int, args: list[str]) -> str:
+    """Run bird CLI with the user's X cookies."""
+    from storage import get_x_cookies
+    cookies = get_x_cookies(user_id)
+    if not cookies:
+        return "X/Twitter account not connected. Use /connect_x <auth_token> <ct0> to link your account."
+    cmd = ["bird", "--auth-token", cookies["auth_token"], "--ct0", cookies["ct0"], "--plain"] + args
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        output = stdout.decode().strip()
+        if proc.returncode != 0:
+            err = stderr.decode().strip()
+            return f"Bird CLI error: {err or output or 'unknown error'}"
+        return output[:4000] if output else "No output from bird."
+    except asyncio.TimeoutError:
+        return "X/Twitter request timed out."
+    except Exception as e:
+        return f"Error running bird: {type(e).__name__}: {e}"
+
+
+async def x_home_timeline(user_id: int, count: int = 10) -> str:
+    return await _run_bird(user_id, ["home", "--count", str(count)])
+
+
+async def x_read_post(user_id: int, url: str) -> str:
+    return await _run_bird(user_id, ["read", url])
+
+
+async def x_post_tweet(user_id: int, text: str) -> str:
+    return await _run_bird(user_id, ["tweet", text])
+
+
+async def x_search(user_id: int, query: str, count: int = 10) -> str:
+    return await _run_bird(user_id, ["search", query, "--count", str(count)])
+
+
+async def x_whoami(user_id: int) -> str:
+    return await _run_bird(user_id, ["whoami"])
+
+
+async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
     if name == "get_crypto_price":
         return await get_crypto_price(input_data["coin_id"], input_data.get("currency", "usd"))
     elif name == "get_multiple_crypto_prices":
@@ -415,4 +548,14 @@ async def execute_tool(name: str, input_data: dict) -> str:
         return await moltbook_feed(input_data.get("sort", "hot"), input_data.get("limit", 5))
     elif name == "moltbook_search":
         return await moltbook_search(input_data["query"])
+    elif name == "x_home_timeline":
+        return await x_home_timeline(user_id, input_data.get("count", 10))
+    elif name == "x_read_post":
+        return await x_read_post(user_id, input_data["url"])
+    elif name == "x_post_tweet":
+        return await x_post_tweet(user_id, input_data["text"])
+    elif name == "x_search":
+        return await x_search(user_id, input_data["query"], input_data.get("count", 10))
+    elif name == "x_whoami":
+        return await x_whoami(user_id)
     return f"Unknown tool: {name}"

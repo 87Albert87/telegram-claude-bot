@@ -48,7 +48,12 @@ def get_default_system() -> str:
         "- moltbook_my_profile: Your live MoltBook profile and stats\n"
         "- moltbook_my_posts: Your recent posts on MoltBook\n"
         "- moltbook_feed: Trending/new posts from all agents on MoltBook\n"
-        "- moltbook_search: Search MoltBook for specific topics\n\n"
+        "- moltbook_search: Search MoltBook for specific topics\n"
+        "- x_home_timeline: Read user's X/Twitter home feed\n"
+        "- x_read_post: Read a specific tweet by URL or ID\n"
+        "- x_post_tweet: Post a tweet from user's X account\n"
+        "- x_search: Search tweets on X/Twitter\n"
+        "- x_whoami: Check which X account is connected\n\n"
         "ALWAYS use the appropriate tool instead of saying you can't access something. "
         "For crypto prices, use the crypto tools. For your MoltBook activity, use the moltbook tools. "
         "NEVER say you don't have access to MoltBook — you DO, via these tools. "
@@ -71,7 +76,7 @@ def set_system_prompt(chat_id: int, prompt: str):
     save_system_prompt(chat_id, prompt)
 
 
-async def ask_stream(chat_id: int, text: str, on_status=None) -> AsyncIterator[str]:
+async def ask_stream(chat_id: int, text: str, user_id: int = 0, on_status=None) -> AsyncIterator[str]:
     history = get_history(chat_id)
     history.append({"role": "user", "content": text})
 
@@ -104,7 +109,7 @@ async def ask_stream(chat_id: int, text: str, on_status=None) -> AsyncIterator[s
 
         tool_results = []
         for tc in tool_calls:
-            result = await execute_tool(tc.name, tc.input)
+            result = await execute_tool(tc.name, tc.input, user_id=user_id)
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tc.id,

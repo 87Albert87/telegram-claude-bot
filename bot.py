@@ -19,12 +19,12 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
-async def stream_reply(message, chat_id: int, text: str):
+async def stream_reply(message, chat_id: int, text: str, user_id: int = 0):
     sent = await message.reply_text("...")
     last_text = ""
     last_edit = 0.0
 
-    async for current_text in ask_stream(chat_id, text):
+    async for current_text in ask_stream(chat_id, text, user_id=user_id):
         now = asyncio.get_event_loop().time()
         if now - last_edit >= STREAM_EDIT_INTERVAL:
             if current_text != last_text:
@@ -107,7 +107,7 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        await stream_reply(update.message, update.effective_chat.id, text)
+        await stream_reply(update.message, update.effective_chat.id, text, user_id=update.effective_user.id)
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
@@ -221,6 +221,35 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Failed to publish: {e}")
 
 
+async def connect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from storage import save_x_cookies
+    # Delete the message immediately to hide cookies
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    args = context.args if context.args else []
+    if len(args) != 2:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Usage: /connect_x <auth_token> <ct0>\n\nGet these from your browser's cookies on x.com."
+        )
+        return
+
+    save_x_cookies(update.effective_user.id, args[0], args[1])
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="X/Twitter account connected. Your message with cookies has been deleted for security. Try asking me about your timeline!"
+    )
+
+
+async def disconnect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from storage import delete_x_cookies
+    delete_x_cookies(update.effective_user.id)
+    await update.message.reply_text("X/Twitter account disconnected.")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Respond in all chats — no restriction to private only
     if is_rate_limited(update.effective_user.id):
@@ -228,7 +257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        await stream_reply(update.message, update.effective_chat.id, update.message.text)
+        await stream_reply(update.message, update.effective_chat.id, update.message.text, user_id=update.effective_user.id)
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
@@ -254,6 +283,8 @@ def main():
     app.add_handler(CommandHandler("growth", growth))
     app.add_handler(CommandHandler("post", post))
     app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("connect_x", connect_x))
+    app.add_handler(CommandHandler("disconnect_x", disconnect_x))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 
