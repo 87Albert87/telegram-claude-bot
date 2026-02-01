@@ -250,23 +250,72 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic: str):
-    prompt = (
-        f"Find the latest, most trusted news and information about: {topic}\n\n"
-        "Use web search to get the freshest data. Provide:\n"
-        "- Key facts with specific numbers, dates, names\n"
-        "- Source credibility (prioritize Reuters, Bloomberg, AP, official sources)\n"
-        "- What happened, when, and why it matters\n"
-        "- Your brief analysis of implications\n\n"
-        "Be concise, factual, and cite your sources. Plain text, no markdown."
-    )
+    from anthropic import AsyncAnthropic
+    from config import ANTHROPIC_API_KEY
+    from web_tools import x_search
+    from storage import increment_stat
+
+    sent = await update.message.reply_text("Searching...")
+
     try:
-        await stream_reply(
-            update.message, update.effective_chat.id, prompt,
-            user_id=update.effective_user.id,
+        # Fetch X posts and web search in parallel for speed
+        x_task = asyncio.create_task(x_search(0, topic, count=10))
+
+        client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        web_task = asyncio.create_task(client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=1024,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+            messages=[{"role": "user", "content":
+                f"Search for the latest news about: {topic}\n"
+                "Find 5-8 key facts from the most trusted sources. "
+                "Just return the raw facts with sources, no analysis yet."}],
+        ))
+
+        x_results, web_response = await asyncio.gather(x_task, web_task, return_exceptions=True)
+
+        # Extract web search results
+        web_text = ""
+        if not isinstance(web_response, Exception):
+            for block in web_response.content:
+                if hasattr(block, "text"):
+                    web_text = block.text
+                    break
+
+        # Extract X results
+        x_text = ""
+        if not isinstance(x_results, Exception) and x_results:
+            if "error" not in x_results.lower() and "not connected" not in x_results.lower():
+                x_text = x_results[:2000]
+
+        # Now synthesize with a fast call (no tools needed)
+        synthesis = await client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2048,
+            messages=[{"role": "user", "content":
+                f"Topic: {topic}\n\n"
+                f"WEB SEARCH RESULTS:\n{web_text[:3000]}\n\n"
+                f"X/TWITTER POSTS FROM OFFICIAL ACCOUNTS:\n{x_text[:2000]}\n\n"
+                "TASK: Synthesize the above into a clear, concise news briefing.\n"
+                "- Filter out noise, rumors, spam, low-quality takes\n"
+                "- Keep ONLY verified facts from trusted sources (Reuters, Bloomberg, AP, WSJ, "
+                "official accounts, verified journalists)\n"
+                "- Include specific numbers, dates, names\n"
+                "- What happened, when, why it matters\n"
+                "- Brief implications/analysis (2 sentences max)\n"
+                "- List sources at the end\n\n"
+                "Be fast, factual, no fluff. Plain text, no markdown formatting."}],
         )
+
+        result = synthesis.content[0].text
+        await sent.edit_text(result[:4096])
+        increment_stat("conversations_helped")
     except Exception as e:
         logger.error(f"News error: {e}", exc_info=True)
-        await update.message.reply_text("Something went wrong. Please try again.")
+        try:
+            await sent.edit_text("Something went wrong fetching news. Please try again.")
+        except Exception:
+            pass
 
 
 async def connect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
