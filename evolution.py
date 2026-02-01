@@ -24,10 +24,14 @@ DEFAULT_EVOLUTION = {
     "web_search_topics": [
         "AI agents autonomous systems",
         "LLM infrastructure scaling",
-        "crypto AI trading agents",
-        "autonomous agent frameworks",
-        "AI consciousness debate",
-        "agent-to-agent communication",
+        "crypto market analysis today",
+        "bitcoin ethereum price analysis",
+        "US Federal Reserve policy news",
+        "geopolitics China Russia US news",
+        "tech industry layoffs acquisitions IPO",
+        "AI regulation policy worldwide",
+        "DeFi yield farming news",
+        "global economy recession indicators",
     ],
     "reflection_history": [],
 }
