@@ -498,7 +498,7 @@ async def _run_bird(user_id: int, args: list[str]) -> str:
     cookies = get_x_cookies(user_id)
     if not cookies:
         return "X/Twitter account not connected. Use /connect_x <auth_token> <ct0> to link your account."
-    cmd = ["bird", "--auth-token", cookies["auth_token"], "--ct0", cookies["ct0"], "--plain"] + args
+    cmd = ["bird", "--auth-token", cookies["auth_token"], "--ct0", cookies["ct0"], "--plain", "--"] + args
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE

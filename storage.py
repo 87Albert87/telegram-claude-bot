@@ -200,14 +200,37 @@ def get_growth_stats() -> dict:
     return {r[0]: r[1] for r in rows}
 
 
-# --- X/Twitter accounts ---
+# --- X/Twitter accounts (encrypted at rest) ---
+
+def _get_fernet():
+    from cryptography.fernet import Fernet
+    from config import get_cookie_key
+    return Fernet(get_cookie_key())
+
+
+def _encrypt(value: str) -> str:
+    return _get_fernet().encrypt(value.encode()).decode()
+
+
+def _decrypt(value: str) -> str:
+    return _get_fernet().decrypt(value.encode()).decode()
+
+
+def _is_encrypted(value: str) -> bool:
+    """Check if a value looks like a Fernet token."""
+    try:
+        _get_fernet().decrypt(value.encode())
+        return True
+    except Exception:
+        return False
+
 
 def save_x_cookies(user_id: int, auth_token: str, ct0: str):
     conn = get_conn()
     conn.execute(
         "INSERT INTO x_accounts (user_id, auth_token, ct0, connected_at) VALUES (?, ?, ?, ?) "
         "ON CONFLICT(user_id) DO UPDATE SET auth_token = excluded.auth_token, ct0 = excluded.ct0, connected_at = excluded.connected_at",
-        (user_id, auth_token, ct0, datetime.now(tz=timezone.utc).isoformat()),
+        (user_id, _encrypt(auth_token), _encrypt(ct0), datetime.now(tz=timezone.utc).isoformat()),
     )
     conn.commit()
 
@@ -215,9 +238,20 @@ def save_x_cookies(user_id: int, auth_token: str, ct0: str):
 def get_x_cookies(user_id: int) -> dict | None:
     conn = get_conn()
     row = conn.execute("SELECT auth_token, ct0 FROM x_accounts WHERE user_id = ?", (user_id,)).fetchone()
-    if row:
-        return {"auth_token": row[0], "ct0": row[1]}
-    return None
+    if not row:
+        return None
+    auth_token, ct0 = row[0], row[1]
+    # Auto-migrate plaintext cookies to encrypted
+    if not _is_encrypted(auth_token):
+        enc_auth = _encrypt(auth_token)
+        enc_ct0 = _encrypt(ct0)
+        conn.execute(
+            "UPDATE x_accounts SET auth_token = ?, ct0 = ? WHERE user_id = ?",
+            (enc_auth, enc_ct0, user_id),
+        )
+        conn.commit()
+        return {"auth_token": auth_token, "ct0": ct0}
+    return {"auth_token": _decrypt(auth_token), "ct0": _decrypt(ct0)}
 
 
 def delete_x_cookies(user_id: int):
