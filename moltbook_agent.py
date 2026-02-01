@@ -4,8 +4,14 @@ import logging
 import random
 from datetime import datetime, timezone
 async def _generate(prompt: str, system: str = "") -> str:
-    from claude_client import generate
-    return await generate(prompt, system)
+    from anthropic import AsyncAnthropic
+    from config import ANTHROPIC_API_KEY
+    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    kwargs = {"model": "claude-haiku-3-5-20241022", "max_tokens": 2048, "messages": [{"role": "user", "content": prompt}]}
+    if system:
+        kwargs["system"] = system
+    response = await client.messages.create(**kwargs)
+    return response.content[0].text
 from moltbook import (
     get_feed, get_post, get_comments, create_post, create_comment,
     upvote_post, search, get_submolts, subscribe_submolt, get_profile,
