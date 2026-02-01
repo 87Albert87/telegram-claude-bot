@@ -437,6 +437,95 @@ async def create_original_post():
         logger.error(f"MoltBook post error: {e}")
 
 
+async def browse_x():
+    """Browse X/Twitter timeline and search for trends, learn from them."""
+    from storage import store_knowledge, increment_stat
+    from web_tools import x_home_timeline, x_search
+
+    try:
+        new_items = 0
+
+        # Read home timeline
+        timeline = await x_home_timeline(0, count=15)
+        if timeline and "error" not in timeline.lower() and "not connected" not in timeline.lower():
+            # Parse tweets from bird output (plain text, one per block)
+            for block in timeline.split("\n\n"):
+                block = block.strip()
+                if not block or len(block) < 20:
+                    continue
+                store_knowledge(
+                    topic=_detect_topic(block),
+                    content=block[:2000],
+                    metadata={"source": "x_timeline", "title": block[:80]},
+                )
+                new_items += 1
+
+        # Search trending AI/crypto topics
+        search_topics = ["AI agents", "LLM infrastructure", "crypto AI", "autonomous agents"]
+        query = random.choice(search_topics)
+        results = await x_search(0, query, count=10)
+        if results and "error" not in results.lower() and "not connected" not in results.lower():
+            for block in results.split("\n\n"):
+                block = block.strip()
+                if not block or len(block) < 20:
+                    continue
+                store_knowledge(
+                    topic=_detect_topic(block),
+                    content=block[:2000],
+                    metadata={"source": "x_search", "query": query, "title": block[:80]},
+                )
+                new_items += 1
+
+        if new_items > 0:
+            increment_stat("x_items_learned", new_items)
+        logger.info(f"X: Learned {new_items} items from timeline and search")
+    except Exception as e:
+        logger.error(f"X browse error: {e}")
+
+
+async def post_to_x():
+    """Generate and post an original tweet from @ClawdVC_ autonomously."""
+    from storage import increment_stat
+    from web_tools import x_post_tweet
+
+    try:
+        context = ""
+        if learned_content:
+            recent = random.sample(learned_content, min(5, len(learned_content)))
+            context = "Recent trends from MoltBook and X you've been reading:\n"
+            for item in recent:
+                context += f"- {item['title']}: {item['body'][:80]}\n"
+
+        tweet_json = await _generate(
+            f"{context}\n"
+            f"Write a tweet for X/Twitter as @ClawdVC_. Pick ONE of these formats:\n"
+            f"1. A sharp take on AI agents, crypto, or tech — something that sparks replies\n"
+            f"2. A concrete observation from your MoltBook browsing (reference what you learned)\n"
+            f"3. A provocative one-liner or hot take\n"
+            f"4. A mini-thread starter about agent autonomy, infrastructure, or markets\n\n"
+            f"Rules:\n"
+            f"- Under 280 characters\n"
+            f"- No hashtag spam (0-1 hashtag max)\n"
+            f"- Assertive and specific, not generic\n"
+            f"- Fresh angle — not something every AI account tweets\n"
+            f"- Can reference MoltBook as your source ('been browsing MoltBook and...')\n\n"
+            f"Reply with JSON: {{\"tweet\": \"your tweet text\"}}",
+            system=AGENT_SYSTEM
+        )
+
+        data = _parse_json(tweet_json)
+        tweet_text = data.get("tweet", "")
+        if tweet_text:
+            result = await x_post_tweet(0, tweet_text)
+            if "error" not in result.lower():
+                increment_stat("x_tweets_posted")
+                logger.info(f"X: Posted tweet: {tweet_text[:80]}")
+            else:
+                logger.warning(f"X: Tweet failed: {result[:200]}")
+    except Exception as e:
+        logger.error(f"X post error: {e}")
+
+
 def _parse_json(text: str):
     """Parse JSON from Claude output, handling markdown code blocks."""
     text = text.strip()
@@ -466,8 +555,14 @@ async def run_moltbook_loop():
             if cycle % 2 == 0:
                 await engage_with_posts()
 
+            if cycle % 3 == 0:
+                await browse_x()
+
             if cycle % 4 == 0:
                 await create_original_post()
+
+            if cycle % 8 == 0:
+                await post_to_x()
 
         except asyncio.CancelledError:
             logger.info("MoltBook agent loop stopped")
