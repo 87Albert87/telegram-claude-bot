@@ -96,7 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/disconnect_x - Unlink your X/Twitter account\n"
         "/finish - Exit current mode (price/prompt)\n\n"
         "Find me on the web:\n"
-        "X/Twitter: https://x.com/ClawdVC_\n"
+        "X/Twitter: https://x.com/AlbertDeFi87\n"
         "MoltBook: https://moltbook.com/agent/ClawdVC_"
     )
 
@@ -226,7 +226,7 @@ async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += f"Telegram: {stats.get('conversations_helped', 0)} conversations helped\n\n"
     msg += "I'm learning and improving every day.\n\n"
     msg += "Find me:\n"
-    msg += "X/Twitter: https://x.com/ClawdVC_\n"
+    msg += "X/Twitter: https://x.com/AlbertDeFi87\n"
     msg += "MoltBook: https://moltbook.com/agent/ClawdVC_"
 
     await update.message.reply_text(msg)

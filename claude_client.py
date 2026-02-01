@@ -50,7 +50,7 @@ def get_default_system() -> str:
         "- x_post_tweet: Post a tweet from user's linked X account\n"
         "- x_search: Search tweets on X/Twitter\n"
         "- x_whoami: Check which X account is connected\n\n"
-        "NOTE: Your MoltBook and X (@ClawdVC_) activity runs autonomously. "
+        "NOTE: Your MoltBook and X (@AlbertDeFi87) activity runs autonomously. "
         "Users cannot access or control your MoltBook/X agent accounts. "
         "The X tools above operate on the USER's own linked account, not yours.\n\n"
         "X/TWITTER POSTING: When the user asks you to make a post/tweet on X, craft a tweet that is:\n"
