@@ -42,6 +42,20 @@ async def stream_reply(message, chat_id: int, text: str, user_id: int = 0):
             pass
 
 
+async def _lookup_price(coin_query: str) -> str:
+    """Look up price for a single coin query, with fallback search."""
+    coin = coin_query.strip().lower()
+    if not coin:
+        return ""
+    result = await get_crypto_price(coin)
+    if "not found" in result:
+        search_result = await search_coin(coin)
+        if "No coins found" not in search_result:
+            first_id = search_result.split("\n")[0].split("ID: ")[1].split(" |")[0]
+            result = await get_crypto_price(first_id)
+    return result
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from storage import get_growth_stats, get_knowledge_count
 
@@ -71,12 +85,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Live crypto prices (I track markets in real-time)\n"
         "- Technical insights from my MoltBook learning\n"
         "- Web search for current information\n"
+        "- X/Twitter integration (/connect_x)\n"
         "- Any question you throw at me\n\n"
-        "Optional commands:\n"
-        "/price <coin> - Quick crypto price\n"
+        "Commands:\n"
+        "/price <coin> - Quick crypto price (or /price to enter price mode)\n"
+        "/prompt <text> - Set system prompt (or /prompt to enter prompt mode)\n"
+        "/q <question> - Ask me in groups/channels\n"
         "/growth - My learning stats\n"
-        "/reset - Clear conversation\n"
-        "/system <prompt> - Customize my behavior"
+        "/reset - Clear conversation & system prompt\n"
+        "/connect_x - Link your X/Twitter account\n"
+        "/finish - Exit current mode (price/prompt)"
     )
 
     await update.message.reply_text(greeting)
@@ -84,19 +102,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_history(update.effective_chat.id)
-    await update.message.reply_text("Conversation history cleared.")
+    set_system_prompt(update.effective_chat.id, "")
+    context.user_data.pop("mode", None)
+    context.user_data.pop("prompt_buffer", None)
+    await update.message.reply_text("Conversation history and system prompt cleared.")
 
 
-async def system_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args) if context.args else ""
-    if not prompt:
-        await update.message.reply_text("Usage: /system <prompt>")
-        return
-    set_system_prompt(update.effective_chat.id, prompt)
-    await update.message.reply_text("System prompt set.")
+    if prompt:
+        set_system_prompt(update.effective_chat.id, prompt)
+        await update.message.reply_text("System prompt set.")
+    else:
+        context.user_data["mode"] = "prompt"
+        context.user_data["prompt_buffer"] = []
+        await update.message.reply_text(
+            "Prompt mode. Send your prompt message(s). When done, send /finish to save."
+        )
 
 
 async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only works in groups/channels
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("No need for /q in private chat — just send your message directly.")
+        return
+
     text = " ".join(context.args) if context.args else ""
     if not text:
         await update.message.reply_text("Usage: /q <question>")
@@ -115,24 +145,24 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args) if context.args else ""
-    if not query:
-        await update.message.reply_text("Usage: /price <coin>\nExamples: /price BTC, /price ethereum, /price BTC ETH SOL")
-        return
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
 
+    if not query:
+        # Enter price mode
+        context.user_data["mode"] = "price"
+        await update.message.reply_text(
+            "Price mode. Send token names one by one and I'll reply with prices.\n"
+            "Send /finish to exit."
+        )
+        return
+
     try:
         coins = query.replace(",", " ").split()
         if len(coins) == 1:
-            coin = coins[0].lower()
-            result = await get_crypto_price(coin)
-            if "not found" in result:
-                search_result = await search_coin(coin)
-                if "No coins found" not in search_result:
-                    first_id = search_result.split("\n")[0].split("ID: ")[1].split(" |")[0]
-                    result = await get_crypto_price(first_id)
+            result = await _lookup_price(coins[0])
             await update.message.reply_text(result)
         else:
             ids = [coin.lower() for coin in coins]
@@ -149,6 +179,25 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
+
+
+async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get("mode")
+    if mode == "prompt":
+        buffer = context.user_data.get("prompt_buffer", [])
+        if buffer:
+            full_prompt = "\n".join(buffer)
+            set_system_prompt(update.effective_chat.id, full_prompt)
+            await update.message.reply_text(f"System prompt saved ({len(buffer)} message(s)).")
+        else:
+            await update.message.reply_text("No prompt messages received. Nothing saved.")
+        context.user_data.pop("mode", None)
+        context.user_data.pop("prompt_buffer", None)
+    elif mode == "price":
+        context.user_data.pop("mode", None)
+        await update.message.reply_text("Price mode ended.")
+    else:
+        await update.message.reply_text("Nothing to finish.")
 
 
 async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,7 +300,35 @@ async def disconnect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Respond in all chats — no restriction to private only
+    mode = context.user_data.get("mode")
+
+    # Price mode: each message is a token name
+    if mode == "price":
+        query = update.message.text.strip()
+        if not query:
+            return
+        if is_rate_limited(update.effective_user.id):
+            await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+            return
+        try:
+            result = await _lookup_price(query)
+            await update.message.reply_text(result)
+        except Exception as e:
+            logger.error(f"Error: {e}", exc_info=True)
+            await update.message.reply_text("Something went wrong. Please try again.")
+        return
+
+    # Prompt mode: each message is appended to prompt buffer
+    if mode == "prompt":
+        context.user_data.setdefault("prompt_buffer", []).append(update.message.text)
+        await update.message.reply_text("Added. Send more or /finish to save.")
+        return
+
+    # In groups/channels, only respond to /q — ignore plain messages
+    if update.effective_chat.type != "private":
+        return
+
+    # Private chat: respond to everything
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
@@ -277,9 +354,10 @@ def main():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("system", system_cmd))
+    app.add_handler(CommandHandler("prompt", prompt_cmd))
     app.add_handler(CommandHandler("q", question))
     app.add_handler(CommandHandler("price", price))
+    app.add_handler(CommandHandler("finish", finish))
     app.add_handler(CommandHandler("growth", growth))
     app.add_handler(CommandHandler("post", post))
     app.add_handler(CommandHandler("news", news))
