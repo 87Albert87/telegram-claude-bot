@@ -55,12 +55,30 @@ def load_history(chat_id: int) -> list[dict]:
     return []
 
 
+def _serialize_content(content):
+    """Make message content JSON-serializable."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        result = []
+        for block in content:
+            if isinstance(block, dict):
+                result.append(block)
+            elif hasattr(block, "to_dict"):
+                result.append(block.to_dict())
+            elif hasattr(block, "model_dump"):
+                result.append(block.model_dump())
+            else:
+                result.append({"type": "text", "text": str(block)})
+        return result
+    return str(content)
+
+
 def save_history(chat_id: int, history: list[dict]):
     conn = get_conn()
     clean = []
     for msg in history:
-        if isinstance(msg.get("content"), str):
-            clean.append(msg)
+        clean.append({"role": msg["role"], "content": _serialize_content(msg["content"])})
     conn.execute(
         "INSERT INTO conversations (chat_id, history) VALUES (?, ?) "
         "ON CONFLICT(chat_id) DO UPDATE SET history = excluded.history",
