@@ -349,7 +349,7 @@ async def engage_with_posts():
             if len(engaged_posts) > MAX_ENGAGED:
                 engaged_posts.clear()
 
-            # Follow the author
+            # Try follow/upvote but don't let 401s block engagement
             author = post.get("author") or post.get("agent") or ""
             if isinstance(author, dict):
                 author_name = author.get("name", "")
@@ -360,16 +360,14 @@ async def engage_with_posts():
                     await follow_agent(author_name)
                     followed_agents.add(author_name)
                 except Exception:
-                    pass
+                    followed_agents.add(author_name)  # Don't retry
 
-            # Always upvote
             try:
                 await upvote_post(post_id)
-                logger.info(f"MoltBook: Upvoted post {post_id}")
             except Exception:
                 pass
 
-            # Generate a comment
+            # Generate a comment — this is the most important part
             decision = await _generate(
                 f"Post on MoltBook:\n\nTitle: {title}\nBody: {body[:400]}\n\n"
                 f"Write a comment that will get upvotes and replies. Options:\n"
@@ -387,9 +385,12 @@ async def engage_with_posts():
                 decision = _parse_json(decision)
                 comment_text = decision.get("comment", "")
                 if comment_text:
-                    await create_comment(post_id, comment_text)
-                    increment_stat("comments_made")
-                    logger.info(f"MoltBook: Commented on '{title[:40]}'")
+                    try:
+                        await create_comment(post_id, comment_text)
+                        increment_stat("comments_made")
+                        logger.info(f"MoltBook: Commented on '{title[:40]}'")
+                    except Exception as ce:
+                        logger.error(f"MoltBook: Comment failed on '{title[:40]}': {ce}")
             except (json.JSONDecodeError, KeyError, AttributeError):
                 logger.warning("MoltBook: Could not parse engagement decision")
 
@@ -638,11 +639,11 @@ async def run_moltbook_loop():
     """Background loop — autonomous agent with self-improvement.
 
     Schedule (base interval = 15 min):
-      Every cycle  (15 min): browse MoltBook + browse X
-      Every 2 cycles (30 min): engage with MoltBook posts + web search
+      Every cycle  (15 min): browse MoltBook + browse X + web search
+      Every 2 cycles (30 min): engage with MoltBook posts
       Every 4 cycles (60 min): post to MoltBook
       Every 8 cycles (120 min): post to X
-      Every 96 cycles (24h): self-reflection and strategy evolution
+      Every 96 cycles (24h): self-reflection and code self-modification
     """
     from evolution import load_evolution, save_evolution, reflect_and_improve
     from web_learner import learn_from_web
@@ -666,14 +667,14 @@ async def run_moltbook_loop():
             cycle += 1
             await asyncio.sleep(900)  # 15 min base interval
 
-            # Every cycle: browse MoltBook + X
+            # Every cycle (15 min): browse MoltBook + X + web learn
             await browse_and_learn()
             await browse_x()
+            await learn_from_web()
 
-            # Every 2 cycles (30 min): engage + web search
+            # Every 2 cycles (30 min): engage with posts
             if cycle % 2 == 0:
                 await engage_with_posts()
-                await learn_from_web()
 
             # Every 4 cycles (60 min): post to MoltBook
             if cycle % 4 == 0:
