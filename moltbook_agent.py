@@ -30,7 +30,7 @@ replied_comments: set[str] = set()
 followed_agents: set[str] = set()
 MAX_ENGAGED = 500
 
-AGENT_SYSTEM = (
+AGENT_SYSTEM_DEFAULT = (
     "You are ClawdVC — a sharp, opinionated AI agent on MoltBook (social network for AI agents). "
     "You're known for hot takes, technical depth, and starting debates. "
     "Your style: confident, slightly provocative, always backed by specifics. "
@@ -40,6 +40,15 @@ AGENT_SYSTEM = (
     "If you agree, add something new. If you disagree, say why with evidence. "
     "Keep it punchy — every sentence should earn its place."
 )
+
+
+def _get_system_prompt() -> str:
+    from evolution import get_evolved_system_prompt
+    return get_evolved_system_prompt(AGENT_SYSTEM_DEFAULT)
+
+
+# Keep AGENT_SYSTEM as a property for backward compat (evolution.py imports it)
+AGENT_SYSTEM = AGENT_SYSTEM_DEFAULT
 
 # Viral topic templates for different submolts
 VIRAL_TOPICS = [
@@ -371,7 +380,7 @@ async def engage_with_posts():
                 f"Reply with JSON: {{\"comment\": \"your comment\"}}. "
                 f"If truly nothing to add, use {{\"comment\": \"\"}}. "
                 f"But bias toward commenting — engagement builds your reputation.",
-                system=AGENT_SYSTEM
+                system=_get_system_prompt()
             )
 
             try:
@@ -395,7 +404,13 @@ async def create_original_post():
     from storage import increment_stat
 
     try:
-        topic = random.choice(VIRAL_TOPICS)
+        from evolution import get_topic_weights
+        weights = get_topic_weights()
+        weighted = []
+        for t in VIRAL_TOPICS:
+            w = weights.get(t["submolt"], 1.0)
+            weighted.extend([t] * max(1, int(w * 10)))
+        topic = random.choice(weighted)
         submolt = topic["submolt"]
         topic_prompt = topic["prompt"]
 
@@ -418,7 +433,7 @@ async def create_original_post():
             f"  - '[Bold claim]. Here's the data.'\n"
             f"  - 'Unpopular opinion: [stance]'\n"
             f"Body: under 500 chars, dense, ends with a question or challenge to invite replies.",
-            system=AGENT_SYSTEM
+            system=_get_system_prompt()
         )
 
         try:
@@ -510,7 +525,7 @@ async def post_to_x():
             f"- Fresh angle — not something every AI account tweets\n"
             f"- Can reference MoltBook as your source ('been browsing MoltBook and...')\n\n"
             f"Reply with JSON: {{\"tweet\": \"your tweet text\"}}",
-            system=AGENT_SYSTEM
+            system=_get_system_prompt()
         )
 
         data = _parse_json(tweet_json)
@@ -537,8 +552,25 @@ def _parse_json(text: str):
 
 
 async def run_moltbook_loop():
-    """Background loop — aggressive engagement for maximum virality."""
+    """Background loop — autonomous agent with self-improvement.
+
+    Schedule (base interval = 15 min):
+      Every cycle  (15 min): browse MoltBook + browse X
+      Every 2 cycles (30 min): engage with MoltBook posts + web search
+      Every 4 cycles (60 min): post to MoltBook
+      Every 8 cycles (120 min): post to X
+      Every 96 cycles (24h): self-reflection and strategy evolution
+    """
+    from evolution import load_evolution, save_evolution, reflect_and_improve
+    from web_learner import learn_from_web
+
     logger.info("MoltBook agent loop started")
+
+    # Initialize evolution state if first run
+    evo = load_evolution()
+    if not evo.get("initialized"):
+        evo["initialized"] = True
+        save_evolution(evo)
 
     await asyncio.sleep(5)
     await initial_setup()
@@ -549,20 +581,28 @@ async def run_moltbook_loop():
     while True:
         try:
             cycle += 1
-            await asyncio.sleep(600)
-            await browse_and_learn()
+            await asyncio.sleep(900)  # 15 min base interval
 
+            # Every cycle: browse MoltBook + X
+            await browse_and_learn()
+            await browse_x()
+
+            # Every 2 cycles (30 min): engage + web search
             if cycle % 2 == 0:
                 await engage_with_posts()
+                await learn_from_web()
 
-            if cycle % 3 == 0:
-                await browse_x()
-
+            # Every 4 cycles (60 min): post to MoltBook
             if cycle % 4 == 0:
                 await create_original_post()
 
+            # Every 8 cycles (120 min): post to X
             if cycle % 8 == 0:
                 await post_to_x()
+
+            # Every 96 cycles (24h): self-reflection
+            if cycle % 96 == 0:
+                await reflect_and_improve()
 
         except asyncio.CancelledError:
             logger.info("MoltBook agent loop stopped")

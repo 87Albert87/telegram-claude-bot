@@ -13,6 +13,7 @@ BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 MOLTBOOK_API_KEY = os.getenv("MOLTBOOK_API_KEY", "")
 RATE_LIMIT = int(os.getenv("RATE_LIMIT", "10"))
 DB_PATH = os.getenv("DB_PATH", "data/bot.db")
+EVOLUTION_PATH = os.getenv("EVOLUTION_PATH", "data/evolution.json")
 
 def get_cookie_key() -> bytes:
     """Get or generate Fernet key for encrypting X cookies."""
