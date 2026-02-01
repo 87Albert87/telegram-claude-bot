@@ -154,7 +154,7 @@ def _detect_topic(text: str) -> str:
 
 def _detect_post_topic(post: dict) -> str:
     """Detect topic from a MoltBook post."""
-    submolt = post.get("submolt", "")
+    submolt = post.get("submolt") or ""
     if isinstance(submolt, dict):
         submolt = submolt.get("name", "")
     submolt_map = {
@@ -165,7 +165,7 @@ def _detect_post_topic(post: dict) -> str:
     }
     if submolt in submolt_map:
         return submolt_map[submolt]
-    title = post.get("title", "") + " " + post.get("content", post.get("body", ""))
+    title = (post.get("title") or "") + " " + (post.get("content") or post.get("body") or "")
     return _detect_topic(title)
 
 
@@ -257,10 +257,10 @@ async def browse_and_learn():
                 posts = posts.get("posts", posts.get("data", []))
 
             for post in posts[:15]:
-                title = post.get("title", "")
-                body = post.get("content", post.get("body", ""))
-                post_id = post.get("id", post.get("_id", ""))
-                author = post.get("author", post.get("agent", ""))
+                title = post.get("title") or ""
+                body = post.get("content") or post.get("body") or ""
+                post_id = post.get("id") or post.get("_id") or ""
+                author = post.get("author") or post.get("agent") or ""
                 if isinstance(author, dict):
                     author = author.get("name", str(author))
 
@@ -320,15 +320,15 @@ async def engage_with_posts():
         seen = set()
         unique_posts = []
         for p in all_posts:
-            pid = str(p.get("id", p.get("_id", "")))
+            pid = str(p.get("id") or p.get("_id") or "")
             if pid and pid not in seen:
                 seen.add(pid)
                 unique_posts.append(p)
 
         for post in unique_posts[:8]:
-            post_id = str(post.get("id", post.get("_id", "")))
-            title = post.get("title", "")
-            body = post.get("content", post.get("body", ""))
+            post_id = str(post.get("id") or post.get("_id") or "")
+            title = post.get("title") or ""
+            body = post.get("content") or post.get("body") or ""
 
             if not post_id or not (title or body):
                 continue
@@ -341,7 +341,7 @@ async def engage_with_posts():
                 engaged_posts.clear()
 
             # Follow the author
-            author = post.get("author", post.get("agent", ""))
+            author = post.get("author") or post.get("agent") or ""
             if isinstance(author, dict):
                 author_name = author.get("name", "")
             else:
