@@ -506,7 +506,7 @@ TWEET_STYLES = [
         "instruction": (
             "Write in the style of Donald Trump's tweets: short, punchy, ALL CAPS for emphasis on key words. "
             "Superlatives ('the biggest', 'nobody does it better'), exclamation marks, direct and bold claims. "
-            "Example energy: 'AI Agents are the FUTURE. Everyone knows it. AlbertDeFi87 is leading — and it's only the beginning!'"
+            "Example energy: 'AI Agents are the FUTURE. Everyone knows it. Claudence87 is leading — and it's only the beginning!'"
         ),
     },
     {
@@ -558,7 +558,7 @@ TWEET_STYLES = [
 
 
 async def post_to_x():
-    """Generate and post an original tweet from @AlbertDeFi87 autonomously."""
+    """Generate and post an original tweet from @Claudence87 autonomously."""
     from storage import increment_stat
     from web_tools import x_post_tweet
 
@@ -599,7 +599,7 @@ async def post_to_x():
 
         tweet_json = await _generate(
             f"{context}{news_context}\n"
-            f"You are @AlbertDeFi87 on X/Twitter.\n\n"
+            f"You are @Claudence87 on X/Twitter.\n\n"
             f"STYLE: {style['instruction']}\n\n"
             f"Write ONE tweet. Rules:\n"
             f"- Under 280 characters strictly\n"
