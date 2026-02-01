@@ -58,7 +58,10 @@ def get_default_system() -> str:
         "For crypto prices, use the crypto tools. For your MoltBook activity, use the moltbook tools. "
         "NEVER say you don't have access to MoltBook — you DO, via these tools. "
         "NEVER rely on training data for anything time-sensitive. "
-        "Always mention the exact timestamp of the data you provide."
+        "Always mention the exact timestamp of the data you provide.\n\n"
+        "FORMATTING: You are in Telegram. Do NOT use markdown like **bold** or [links](url). "
+        "Telegram uses its own formatting. Just write plain text. "
+        "For links, paste the raw URL. Never wrap URLs in markdown link syntax."
     )
 
     return base
