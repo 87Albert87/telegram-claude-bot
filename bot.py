@@ -259,6 +259,26 @@ async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic:
     try:
         client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
+        # Fetch live prices from CoinGecko for crypto/market topics
+        live_prices = ""
+        topic_lower = topic.lower()
+        if any(w in topic_lower for w in ("crypto", "bitcoin", "btc", "ethereum", "eth", "solana",
+                "sol", "market", "token", "defi", "coin", "xrp", "bnb", "cardano", "ada")):
+            try:
+                from web_tools import get_multiple_crypto_prices
+                live_prices = await get_multiple_crypto_prices(
+                    "bitcoin,ethereum,solana,ripple,binancecoin,cardano,dogecoin", "usd")
+            except Exception:
+                pass
+
+        price_instruction = ""
+        if live_prices:
+            price_instruction = (
+                f"\n\nLIVE PRICES (from CoinGecko, real-time):\n{live_prices}\n"
+                f"Use THESE numbers for all token/coin prices — they are live and accurate. "
+                f"Do NOT use prices from news articles, they may be outdated.\n"
+            )
+
         # Web search with high token limit so Claude actually writes the full report
         web_response = await client.messages.create(
             model="claude-sonnet-4-20250514",
@@ -301,7 +321,8 @@ async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic:
                 f"- Each story must add NEW information, no repetition\n"
                 f"- Specific numbers everywhere: prices, dates, percentages, names\n"
                 f"- Plain text, no markdown\n"
-                f"- Be thorough — minimum 400 words"}],
+                f"- Be thorough — minimum 400 words"
+                f"{price_instruction}"}],
         )
 
         # Extract ALL text blocks from response
