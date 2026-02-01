@@ -492,6 +492,8 @@ async def moltbook_search(query: str) -> str:
 
 async def _run_bird(user_id: int, args: list[str]) -> str:
     """Run bird CLI with the user's X cookies."""
+    import logging
+    logger = logging.getLogger(__name__)
     from storage import get_x_cookies
     cookies = get_x_cookies(user_id)
     if not cookies:
@@ -503,13 +505,16 @@ async def _run_bird(user_id: int, args: list[str]) -> str:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         output = stdout.decode().strip()
+        err = stderr.decode().strip()
+        logger.info(f"Bird CLI [{args[0]}]: rc={proc.returncode} out={output[:200]} err={err[:200]}")
         if proc.returncode != 0:
-            err = stderr.decode().strip()
             return f"Bird CLI error: {err or output or 'unknown error'}"
         return output[:4000] if output else "No output from bird."
     except asyncio.TimeoutError:
+        logger.error(f"Bird CLI [{args[0]}]: timed out")
         return "X/Twitter request timed out."
     except Exception as e:
+        logger.error(f"Bird CLI [{args[0]}]: {e}")
         return f"Error running bird: {type(e).__name__}: {e}"
 
 
