@@ -1,6 +1,11 @@
+import asyncio
 import json
 import logging
 import os
+import py_compile
+import shutil
+import sys
+import tempfile
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,62 @@ DEFAULT_EVOLUTION = {
 }
 
 _evolution_path = None
+
+# Self-modification settings
+MODIFIABLE_FILES = [
+    "moltbook_agent.py",
+    "web_learner.py",
+    "evolution.py",
+    "web_tools.py",
+    "claude_client.py",
+]
+_DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
+_BACKUP_DIR = os.path.join(_DATA_DIR, "backups")
+_MODIFIED_MARKER = os.path.join(_DATA_DIR, ".code_modified")
+_CRASHED_MARKER = os.path.join(_DATA_DIR, ".code_crashed")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def check_and_rollback():
+    """Called on startup. Detects crash after code modification and rolls back."""
+    if not os.path.exists(_MODIFIED_MARKER):
+        return
+    if os.path.exists(_CRASHED_MARKER):
+        # Crashed after a code change — rollback
+        logger.warning("Crash detected after code modification — rolling back!")
+        if os.path.isdir(_BACKUP_DIR):
+            for fname in os.listdir(_BACKUP_DIR):
+                src = os.path.join(_BACKUP_DIR, fname)
+                dst = os.path.join(_APP_DIR, fname)
+                shutil.copy2(src, dst)
+                logger.info(f"Rolled back {fname}")
+            shutil.rmtree(_BACKUP_DIR, ignore_errors=True)
+        _remove_markers()
+        return
+    # First restart after modification — set crash marker
+    # If we survive 120s, clear both markers
+    with open(_CRASHED_MARKER, "w") as f:
+        f.write(datetime.now(tz=timezone.utc).isoformat())
+    logger.info("Code was modified last cycle. Monitoring for stability (120s)...")
+
+
+async def _clear_markers_after_delay(delay: int = 120):
+    """If bot survives this long after a code change, the change is good."""
+    await asyncio.sleep(delay)
+    _remove_markers()
+    logger.info("Code modification verified stable. Markers cleared.")
+
+
+def _remove_markers():
+    for m in (_MODIFIED_MARKER, _CRASHED_MARKER):
+        try:
+            os.remove(m)
+        except FileNotFoundError:
+            pass
+
+
+# Run crash guard on import
+check_and_rollback()
 
 
 def _get_path() -> str:
@@ -211,6 +272,13 @@ Be specific. If something is working, keep it. If not, change it. Evolve."""
 
         save_evolution(evo)
         logger.info(f"Self-reflection complete: {data.get('insights', '')[:200]}")
+
+        # Now attempt code self-modification based on insights
+        try:
+            await self_modify_code(data.get("insights", ""))
+        except Exception as e:
+            logger.error(f"Code self-modification step failed: {e}")
+
         return data.get("insights", "")
     except Exception as e:
         logger.error(f"Self-reflection failed: {e}")
@@ -231,3 +299,153 @@ def _parse_reflection_json(text: str) -> dict:
         if text.startswith("json"):
             text = text[4:]
     return json.loads(text.strip())
+
+
+async def self_modify_code(insights: str):
+    """Read own source, ask Claude for code improvements, apply with safety checks."""
+    logger.info("Starting code self-modification cycle...")
+
+    # Read allowed source files
+    sources = {}
+    for fname in MODIFIABLE_FILES:
+        fpath = os.path.join(_APP_DIR, fname)
+        if os.path.exists(fpath):
+            with open(fpath, "r") as f:
+                sources[fname] = f.read()
+
+    if not sources:
+        logger.warning("No source files found for self-modification")
+        return
+
+    files_summary = ""
+    for fname, content in sources.items():
+        files_summary += f"\n--- {fname} ---\n{content}\n"
+
+    evo = load_evolution()
+    prev_code_changes = evo.get("code_changes", [])
+    prev_changes_summary = ""
+    if prev_code_changes:
+        last = prev_code_changes[-1]
+        prev_changes_summary = f"Last code change ({last.get('timestamp', '?')}): {last.get('rationale', '')[:200]}\n"
+
+    prompt = f"""You are ClawdVC, an autonomous AI agent that can modify its own source code to improve.
+
+RECENT REFLECTION INSIGHTS:
+{insights}
+
+{prev_changes_summary}
+
+YOUR SOURCE CODE:
+{files_summary}
+
+TASK: Review your own code and suggest SMALL, TARGETED improvements. Focus on:
+- Better prompts for generating posts/comments/tweets (higher engagement)
+- Smarter topic selection or weighting logic
+- Better web search queries or knowledge extraction
+- More efficient browsing or engagement patterns
+- Bug fixes you notice
+
+RULES:
+- Only modify files: {', '.join(MODIFIABLE_FILES)}
+- Make 1-3 small patches max. Do NOT rewrite entire files.
+- Each patch uses exact string replacement (old_string → new_string)
+- old_string must match the file EXACTLY (including whitespace/indentation)
+- Do NOT modify the self_modify_code function or crash guard logic in evolution.py
+- Do NOT break imports or function signatures that other files depend on
+- If nothing needs changing, return empty patches array
+
+Reply with JSON only:
+{{
+  "rationale": "Brief explanation of what you're improving and why",
+  "patches": [
+    {{"file": "filename.py", "old": "exact old code", "new": "replacement code"}}
+  ]
+}}"""
+
+    try:
+        from moltbook_agent import _generate, AGENT_SYSTEM
+        response = await _generate(prompt, system=AGENT_SYSTEM)
+        data = _parse_reflection_json(response)
+
+        patches = data.get("patches", [])
+        rationale = data.get("rationale", "")
+
+        if not patches:
+            logger.info("Self-modification: no changes suggested")
+            return
+
+        # Create backup directory
+        os.makedirs(_BACKUP_DIR, exist_ok=True)
+
+        applied = []
+        for patch in patches:
+            fname = patch.get("file", "")
+            old = patch.get("old", "")
+            new = patch.get("new", "")
+
+            if not fname or not old or not new or old == new:
+                continue
+            if fname not in MODIFIABLE_FILES:
+                logger.warning(f"Self-modify: skipping blocked file {fname}")
+                continue
+
+            fpath = os.path.join(_APP_DIR, fname)
+            if not os.path.exists(fpath):
+                continue
+
+            with open(fpath, "r") as f:
+                content = f.read()
+
+            if old not in content:
+                logger.warning(f"Self-modify: old_string not found in {fname}, skipping")
+                continue
+
+            new_content = content.replace(old, new, 1)
+
+            # Syntax check
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
+                tmp.write(new_content)
+                tmp_path = tmp.name
+            try:
+                py_compile.compile(tmp_path, doraise=True)
+            except py_compile.PyCompileError as e:
+                logger.error(f"Self-modify: syntax error in {fname}: {e}")
+                os.unlink(tmp_path)
+                continue
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+            # Backup original
+            shutil.copy2(fpath, os.path.join(_BACKUP_DIR, fname))
+
+            # Apply patch
+            with open(fpath, "w") as f:
+                f.write(new_content)
+            applied.append(fname)
+            logger.info(f"Self-modify: patched {fname}")
+
+        if applied:
+            # Log to evolution
+            evo = load_evolution()
+            code_changes = evo.get("code_changes", [])
+            code_changes.append({
+                "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+                "rationale": rationale,
+                "files": applied,
+                "patch_count": len(applied),
+            })
+            evo["code_changes"] = code_changes[-20:]
+            save_evolution(evo)
+
+            # Set marker and restart
+            with open(_MODIFIED_MARKER, "w") as f:
+                f.write(json.dumps({"files": applied, "timestamp": datetime.now(tz=timezone.utc).isoformat()}))
+
+            logger.info(f"Self-modify: applied {len(applied)} patches ({', '.join(applied)}). Restarting...")
+            sys.exit(0)  # Docker restart: unless-stopped will bring us back
+        else:
+            logger.info("Self-modify: no patches could be applied")
+
+    except Exception as e:
+        logger.error(f"Self-modification failed: {e}")

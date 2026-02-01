@@ -435,6 +435,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def post_init(application):
+    # Schedule code-modification stability check
+    from evolution import _clear_markers_after_delay, _MODIFIED_MARKER
+    if os.path.exists(_MODIFIED_MARKER):
+        asyncio.create_task(_clear_markers_after_delay(120))
+
     if MOLTBOOK_API_KEY:
         from moltbook_agent import run_moltbook_loop
         asyncio.create_task(run_moltbook_loop())
