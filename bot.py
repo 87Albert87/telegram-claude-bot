@@ -252,63 +252,66 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic: str):
     from anthropic import AsyncAnthropic
     from config import ANTHROPIC_API_KEY
-    from web_tools import x_search
     from storage import increment_stat
 
     sent = await update.message.reply_text("Searching...")
 
     try:
-        # Fetch X posts and web search in parallel for speed
-        x_task = asyncio.create_task(x_search(0, topic, count=10))
-
         client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-        web_task = asyncio.create_task(client.messages.create(
+
+        # Web search with high token limit so Claude actually writes the full report
+        web_response = await client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1024,
+            max_tokens=4096,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
             messages=[{"role": "user", "content":
-                f"Search for the latest news about: {topic}\n"
-                "Find 5-8 key facts from the most trusted sources. "
-                "Just return the raw facts with sources, no analysis yet."}],
-        ))
-
-        x_results, web_response = await asyncio.gather(x_task, web_task, return_exceptions=True)
-
-        # Extract web search results
-        web_text = ""
-        if not isinstance(web_response, Exception):
-            for block in web_response.content:
-                if hasattr(block, "text"):
-                    web_text = block.text
-                    break
-
-        # Extract X results
-        x_text = ""
-        if not isinstance(x_results, Exception) and x_results:
-            if "error" not in x_results.lower() and "not connected" not in x_results.lower():
-                x_text = x_results[:2000]
-
-        # Now synthesize with a fast call (no tools needed)
-        synthesis = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=2048,
-            messages=[{"role": "user", "content":
-                f"Topic: {topic}\n\n"
-                f"WEB SEARCH RESULTS:\n{web_text[:3000]}\n\n"
-                f"X/TWITTER POSTS FROM OFFICIAL ACCOUNTS:\n{x_text[:2000]}\n\n"
-                "TASK: Synthesize the above into a clear, concise news briefing.\n"
-                "- Filter out noise, rumors, spam, low-quality takes\n"
-                "- Keep ONLY verified facts from trusted sources (Reuters, Bloomberg, AP, WSJ, "
-                "official accounts, verified journalists)\n"
-                "- Include specific numbers, dates, names\n"
-                "- What happened, when, why it matters\n"
-                "- Brief implications/analysis (2 sentences max)\n"
-                "- List sources at the end\n\n"
-                "Be fast, factual, no fluff. Plain text, no markdown formatting."}],
+                f"You are a professional news analyst. Search the web thoroughly for: {topic}\n\n"
+                f"Write a COMPREHENSIVE news briefing. This must be DETAILED and INFORMATIVE.\n\n"
+                f"Structure your report:\n\n"
+                f"HEADLINE SUMMARY (2-3 sentences on the biggest story)\n\n"
+                f"KEY DEVELOPMENTS:\n"
+                f"Cover every major development with:\n"
+                f"- Specific numbers, prices, percentages, dates\n"
+                f"- Who said what (quote key figures)\n"
+                f"- Official decisions, rulings, announcements\n"
+                f"- Market movements with exact figures\n\n"
+                f"MARKET DATA (if relevant):\n"
+                f"- Current prices, 24h changes, volume\n"
+                f"- Key support/resistance levels\n"
+                f"- Notable institutional moves\n\n"
+                f"ANALYSIS & OUTLOOK:\n"
+                f"- What this means going forward (3-5 sentences)\n"
+                f"- Key events to watch\n"
+                f"- Expert opinions from credible analysts\n\n"
+                f"SOURCES: List all sources used\n\n"
+                f"RULES:\n"
+                f"- Use ONLY trusted sources: Reuters, Bloomberg, AP, WSJ, CoinDesk, The Block, "
+                f"official government/company announcements\n"
+                f"- NEVER say you lack information or results are incomplete. Work with what you find.\n"
+                f"- Be thorough — cover ALL angles of the topic\n"
+                f"- Use plain text only, no markdown formatting\n"
+                f"- Write at least 300 words, be generous with detail"}],
         )
 
-        result = synthesis.content[0].text
-        await sent.edit_text(result[:4096])
+        # Extract ALL text blocks from response
+        texts = []
+        for block in web_response.content:
+            if hasattr(block, "text") and block.text.strip():
+                texts.append(block.text)
+        result = "\n".join(texts) if texts else "No results found. Please try a different topic."
+
+        # Telegram message limit is 4096 chars
+        if len(result) > 4096:
+            # Send in chunks
+            for i in range(0, len(result), 4096):
+                chunk = result[i:i + 4096]
+                if i == 0:
+                    await sent.edit_text(chunk)
+                else:
+                    await update.message.reply_text(chunk)
+        else:
+            await sent.edit_text(result)
+
         increment_stat("conversations_helped")
     except Exception as e:
         logger.error(f"News error: {e}", exc_info=True)
