@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 import json
+from resilience import unstoppable
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ RESEARCH_TOPICS = [
 ]
 
 
+@unstoppable(max_retries=3, fallback_value=[], critical=False)
 async def fetch_google_trends() -> List[Dict]:
     """
     Fetch trending searches from Google Trends.
@@ -77,6 +79,7 @@ async def fetch_google_trends() -> List[Dict]:
     return trends
 
 
+@unstoppable(max_retries=3, fallback_value=[], critical=True)
 async def fetch_arxiv_papers() -> List[Dict]:
     """
     Fetch latest AI/ML research papers from arXiv.
@@ -112,6 +115,7 @@ async def fetch_arxiv_papers() -> List[Dict]:
     return papers
 
 
+@unstoppable(max_retries=2, fallback_value=[], critical=False)
 async def fetch_reddit_posts() -> List[Dict]:
     """
     Fetch top posts from AI-related subreddits.
@@ -160,6 +164,7 @@ async def fetch_reddit_posts() -> List[Dict]:
     return posts
 
 
+@unstoppable(max_retries=3, fallback_value=[], critical=True)
 async def fetch_hackernews_stories() -> List[Dict]:
     """
     Fetch top stories from HackerNews.
@@ -204,6 +209,7 @@ async def fetch_hackernews_stories() -> List[Dict]:
     return stories
 
 
+@unstoppable(max_retries=3, fallback_value=[], critical=True)
 async def research_targeted_topics() -> List[Dict]:
     """
     Research specific topics using web search.

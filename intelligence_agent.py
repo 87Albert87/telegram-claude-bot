@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 import json
+from resilience import unstoppable
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ MONITORING_KEYWORDS = [
 ]
 
 
+@unstoppable(max_retries=3, fallback_value={}, critical=True)
 async def analyze_moltbook_competitors() -> Dict:
     """
     Analyze other AI agents on MoltBook.

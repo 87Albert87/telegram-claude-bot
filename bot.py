@@ -506,6 +506,11 @@ async def post_init(application):
     asyncio.create_task(intelligence_agent_loop())
     logger.info("Intelligence agent enabled")
 
+    # Start resilience monitor (error recovery & self-healing)
+    from resilience import resilience_monitor_loop
+    asyncio.create_task(resilience_monitor_loop())
+    logger.info("Resilience system enabled - UNSTOPPABLE MODE")
+
 
 def main():
     request = HTTPXRequest(connect_timeout=20.0, read_timeout=60.0, write_timeout=20.0, pool_timeout=20.0)
