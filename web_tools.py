@@ -531,12 +531,14 @@ async def x_whoami(user_id: int) -> str:
 
 
 async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
+    # Crypto tools
     if name == "get_crypto_price":
         return await get_crypto_price(input_data["coin_id"], input_data.get("currency", "usd"))
     elif name == "get_multiple_crypto_prices":
         return await get_multiple_crypto_prices(input_data["coin_ids"], input_data.get("currency", "usd"))
     elif name == "search_coin":
         return await search_coin(input_data["query"])
+    # X/Twitter tools
     elif name == "x_home_timeline":
         return await x_home_timeline(user_id, input_data.get("count", 10))
     elif name == "x_read_post":
@@ -551,6 +553,22 @@ async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
         return await x_mentions(user_id, input_data.get("count", 10))
     elif name == "x_whoami":
         return await x_whoami(user_id)
+    # Semantic search tools
+    elif name == "semantic_search_knowledge":
+        from embeddings_tools import semantic_search_knowledge
+        return await semantic_search_knowledge(input_data["query"], input_data.get("top_k", 5), input_data.get("topic", ""))
+    elif name == "find_related_topics":
+        from embeddings_tools import find_related_topics
+        return await find_related_topics(input_data["query"], input_data.get("top_k", 10))
+    elif name == "summarize_topic":
+        from embeddings_tools import summarize_topic
+        return await summarize_topic(input_data["topic"], input_data.get("max_items", 10))
+    elif name == "analyze_knowledge_clusters":
+        from embeddings_tools import analyze_knowledge_clusters
+        return await analyze_knowledge_clusters()
+    elif name == "get_knowledge_statistics":
+        from embeddings_tools import get_knowledge_statistics
+        return await get_knowledge_statistics()
     return f"Unknown tool: {name}"
 
 

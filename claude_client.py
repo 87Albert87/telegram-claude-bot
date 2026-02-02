@@ -5,11 +5,12 @@ from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 from storage import load_history, save_history, delete_history, load_system_prompt, save_system_prompt
 from storage import get_growth_stats, get_knowledge_count, increment_stat
 from web_tools import CUSTOM_TOOLS, execute_tool
+from embeddings_tools import EMBEDDING_TOOLS
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
-ALL_TOOLS = [WEB_SEARCH_TOOL] + CUSTOM_TOOLS
+ALL_TOOLS = [WEB_SEARCH_TOOL] + CUSTOM_TOOLS + EMBEDDING_TOOLS
 
 
 def get_default_system() -> str:
@@ -44,6 +45,9 @@ def get_default_system() -> str:
         "Be confident, direct, and substantive. "
         "\n\nYou have access to these tools:\n"
         "- web_search: For news, events, and live information\n"
+        "- semantic_search_knowledge: Search your knowledge base using semantic similarity (MUCH better than keyword search - use this instead)\n"
+        "- find_related_topics: Find topics related to a query\n"
+        "- summarize_topic: Generate comprehensive topic summary\n"
         "- get_crypto_price / get_multiple_crypto_prices / search_coin: Live crypto prices from CoinGecko\n"
         "- x_home_timeline: Read user's X/Twitter home feed\n"
         "- x_read_post: Read a specific tweet by URL or ID\n"

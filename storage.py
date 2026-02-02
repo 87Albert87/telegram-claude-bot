@@ -2,9 +2,10 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timezone
+from typing import Optional, List, Dict
 from config import DB_PATH
 
-_conn: sqlite3.Connection | None = None
+_conn: Optional[sqlite3.Connection] = None
 
 
 def get_conn() -> sqlite3.Connection:
@@ -49,7 +50,7 @@ def get_conn() -> sqlite3.Connection:
 
 # --- Conversation storage ---
 
-def load_history(chat_id: int) -> list[dict]:
+def load_history(chat_id: int) -> List[Dict]:
     conn = get_conn()
     row = conn.execute("SELECT history FROM conversations WHERE chat_id = ?", (chat_id,)).fetchone()
     if row:
@@ -76,7 +77,7 @@ def _serialize_content(content):
     return str(content)
 
 
-def save_history(chat_id: int, history: list[dict]):
+def save_history(chat_id: int, history: List[Dict]):
     conn = get_conn()
     clean = []
     for msg in history:
@@ -138,7 +139,7 @@ def store_knowledge(topic: str, content: str, metadata: dict):
     conn.commit()
 
 
-def search_knowledge(query: str, limit: int = 5, topic: str = "") -> list[dict]:
+def search_knowledge(query: str, limit: int = 5, topic: str = "") -> List[Dict]:
     """Search knowledge base by keywords. Returns list of dicts."""
     conn = get_conn()
     words = [w for w in query.lower().split() if len(w) > 2]
@@ -235,7 +236,7 @@ def save_x_cookies(user_id: int, auth_token: str, ct0: str):
     conn.commit()
 
 
-def get_x_cookies(user_id: int) -> dict | None:
+def get_x_cookies(user_id: int) -> Optional[Dict]:
     conn = get_conn()
     row = conn.execute("SELECT auth_token, ct0 FROM x_accounts WHERE user_id = ?", (user_id,)).fetchone()
     if not row:
@@ -258,3 +259,90 @@ def delete_x_cookies(user_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM x_accounts WHERE user_id = ?", (user_id,))
     conn.commit()
+
+
+# --- ChromaDB Integration ---
+
+def store_knowledge_with_embeddings(topic: str, content: str, metadata: dict):
+    """
+    Store knowledge in both SQLite and ChromaDB (semantic search).
+    This is the preferred method for storing new knowledge.
+    """
+    # Store in SQLite (existing pattern)
+    store_knowledge(topic, content, metadata)
+
+    # Also store in ChromaDB for semantic search
+    try:
+        from embeddings_client import add_to_knowledge_base
+
+        # Ensure metadata has topic
+        metadata_copy = metadata.copy() if isinstance(metadata, dict) else {}
+        metadata_copy["topic"] = topic
+
+        # Add to vector DB
+        add_to_knowledge_base(content, metadata_copy)
+    except Exception as e:
+        import logging
+        logging.error(f"Error storing in ChromaDB: {e}")
+        # Continue even if ChromaDB fails (SQLite still has it)
+
+
+def migrate_knowledge_to_chromadb():
+    """
+    One-time migration: Move all existing SQLite knowledge to ChromaDB.
+    Run this once after setting up ChromaDB.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT topic, content, metadata FROM knowledge_base ORDER BY id DESC"
+    ).fetchall()
+
+    knowledge_items = []
+    for row in rows:
+        topic = row[0]
+        content = row[1]
+        metadata_str = row[2]
+
+        try:
+            metadata = json.loads(metadata_str) if metadata_str else {}
+        except:
+            metadata = {}
+
+        knowledge_items.append({
+            "content": content,
+            "topic": topic,
+            "metadata": metadata
+        })
+
+    # Migrate to ChromaDB
+    try:
+        from embeddings_client import migrate_from_sqlite
+        migrated_count = migrate_from_sqlite(knowledge_items)
+        return migrated_count
+    except Exception as e:
+        import logging
+        logging.error(f"Error migrating to ChromaDB: {e}")
+        return 0
+
+
+def get_all_knowledge_for_migration() -> List[Dict]:
+    """Get all knowledge entries for migration purposes."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT topic, content, metadata FROM knowledge_base ORDER BY id DESC"
+    ).fetchall()
+
+    items = []
+    for row in rows:
+        try:
+            metadata = json.loads(row[2]) if row[2] else {}
+        except:
+            metadata = {}
+
+        items.append({
+            "topic": row[0],
+            "content": row[1],
+            "metadata": metadata
+        })
+
+    return items
