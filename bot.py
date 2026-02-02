@@ -383,53 +383,6 @@ async def disconnect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("X/Twitter account disconnected.")
 
 
-async def set_moltbook_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from config import ADMIN_IDS
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("Admin only.")
-        return
-    # Delete message to hide the key
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-    args = context.args if context.args else []
-    if len(args) != 1:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Usage: /set_moltbook_key <api_key>",
-        )
-        return
-    key = args[0]
-    # Update .env file
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-    lines = []
-    found = False
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            for line in f:
-                if line.startswith("MOLTBOOK_API_KEY="):
-                    lines.append(f"MOLTBOOK_API_KEY={key}\n")
-                    found = True
-                else:
-                    lines.append(line)
-    if not found:
-        lines.append(f"MOLTBOOK_API_KEY={key}\n")
-    with open(env_path, "w") as f:
-        f.writelines(lines)
-    # Update runtime config
-    import config
-    config.MOLTBOOK_API_KEY = key
-    os.environ["MOLTBOOK_API_KEY"] = key
-    # Start MoltBook loop if not already running
-    from moltbook_agent import run_moltbook_loop
-    asyncio.create_task(run_moltbook_loop())
-    logger.info(f"MoltBook API key set and agent loop started")
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="MoltBook API key saved. Agent loop started. Your message with the key has been deleted.",
-    )
-
 
 async def check_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from config import ADMIN_IDS
@@ -559,7 +512,6 @@ def main():
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
     app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
     app.add_handler(CommandHandler("check_x", check_x))
-    app.add_handler(CommandHandler("set_moltbook_key", set_moltbook_key))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 

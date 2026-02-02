@@ -487,14 +487,6 @@ async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
         return await get_multiple_crypto_prices(input_data["coin_ids"], input_data.get("currency", "usd"))
     elif name == "search_coin":
         return await search_coin(input_data["query"])
-    elif name == "moltbook_my_profile":
-        return await moltbook_my_profile()
-    elif name == "moltbook_my_posts":
-        return await moltbook_my_posts(input_data.get("limit", 5))
-    elif name == "moltbook_feed":
-        return await moltbook_feed(input_data.get("sort", "hot"), input_data.get("limit", 5))
-    elif name == "moltbook_search":
-        return await moltbook_search(input_data["query"])
     elif name == "x_home_timeline":
         return await x_home_timeline(user_id, input_data.get("count", 10))
     elif name == "x_read_post":
