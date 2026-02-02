@@ -82,11 +82,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- Live crypto prices (I track markets in real-time)\n"
         "- Technical insights from my MoltBook learning\n"
         "- Web search for current information\n"
+        "- Image generation (powered by Gemini)\n"
         "- X/Twitter posting (link your account with /connect_x)\n"
         "- Tweet style cloning (send me a tweet link to replicate)\n"
         "- Any question you throw at me\n\n"
         "Commands:\n"
         "/price <coin> - Quick crypto price (or /price to enter price mode)\n"
+        "/image <prompt> - Generate images with AI\n"
         "/prompt <text> - Set system prompt (or /prompt to enter prompt mode)\n"
         "/q <question> - Ask me in groups/channels\n"
         "/news <topic> - Latest news (or /news to enter news mode)\n"
@@ -208,7 +210,6 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate an image using nano-banana-pro (Gemini 3 Pro Image)."""
-    from resilience import unstoppable
     import subprocess
     import os
     from datetime import datetime
@@ -227,6 +228,11 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/image A serene Japanese garden with cherry blossoms\n\n"
             "Add 'high-res' or '4K' for higher quality."
         )
+        return
+
+    # Check if GEMINI_API_KEY is configured
+    if not os.environ.get("GEMINI_API_KEY"):
+        await update.message.reply_text("❌ Image generation not configured. Please set GEMINI_API_KEY.")
         return
 
     # Send generating message
@@ -249,16 +255,17 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         desc_name = "-".join(word for word in desc_words if word.isalnum())
         if not desc_name:
             desc_name = "image"
-        filename = f"{timestamp}-{desc_name}.png"
+        filename = f"/tmp/{timestamp}-{desc_name}.png"
 
-        # Run nano-banana-pro script
-        script_path = os.path.expanduser("~/.codex/skills/nano-banana-pro/scripts/generate_image.py")
+        # Run image generation script
+        script_path = os.path.join(os.path.dirname(__file__), "generate_image.py")
 
         result = subprocess.run(
-            ["uv", "run", script_path, "--prompt", prompt, "--filename", filename, "--resolution", resolution],
+            ["python3", script_path, "--prompt", prompt, "--filename", filename, "--resolution", resolution],
             capture_output=True,
             text=True,
-            timeout=120  # 2 minute timeout
+            timeout=120,  # 2 minute timeout
+            env=os.environ
         )
 
         if result.returncode != 0:
@@ -295,7 +302,7 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except subprocess.TimeoutExpired:
         await status_msg.edit_text("❌ Image generation timed out. Please try a simpler prompt.")
     except Exception as e:
-        logger.error(f"Image generation error: {e}")
+        logger.error(f"Image generation error: {e}", exc_info=True)
         await status_msg.edit_text(f"❌ Error: {str(e)[:500]}")
 
 
