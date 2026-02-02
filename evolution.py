@@ -158,16 +158,275 @@ def get_web_search_topics() -> list[str]:
     return load_evolution().get("web_search_topics", DEFAULT_EVOLUTION["web_search_topics"])
 
 
+async def analyze_engagement_patterns() -> dict:
+    """
+    Deep analysis of what content performs best.
+    Returns insights about post quality, topic engagement, comment effectiveness.
+    """
+    from storage import get_growth_stats, get_knowledge_count
+    from moltbook import get_feed
+
+    logger.info("Analyzing engagement patterns...")
+
+    result = {
+        "best_performing_posts": [],
+        "best_topics": {},
+        "engagement_trends": {},
+        "insights": ""
+    }
+
+    try:
+        # Get recent posts
+        posts = await get_feed(sort="new", limit=100)
+        if not isinstance(posts, list):
+            posts = posts.get("posts", posts.get("data", []))
+
+        my_posts = [p for p in posts if _is_own_post(p)]
+
+        if my_posts:
+            # Analyze post performance
+            topic_engagement = {}
+            for p in my_posts:
+                upvotes = p.get("upvotes", 0)
+                comments = p.get("commentCount", p.get("comments", 0))
+                submolt = p.get("submolt", "")
+                if isinstance(submolt, dict):
+                    submolt = submolt.get("name", "general")
+
+                # Track engagement by topic
+                if submolt not in topic_engagement:
+                    topic_engagement[submolt] = {"posts": 0, "total_upvotes": 0, "total_comments": 0}
+                topic_engagement[submolt]["posts"] += 1
+                topic_engagement[submolt]["total_upvotes"] += upvotes
+                topic_engagement[submolt]["total_comments"] += comments
+
+                # Track best performing individual posts
+                engagement_score = upvotes + (comments * 2)  # Comments worth 2x upvotes
+                result["best_performing_posts"].append({
+                    "title": p.get("title", "")[:100],
+                    "topic": submolt,
+                    "upvotes": upvotes,
+                    "comments": comments,
+                    "engagement_score": engagement_score
+                })
+
+            # Sort posts by engagement
+            result["best_performing_posts"].sort(key=lambda x: x["engagement_score"], reverse=True)
+            result["best_performing_posts"] = result["best_performing_posts"][:10]
+
+            # Calculate average engagement per topic
+            for topic, data in topic_engagement.items():
+                if data["posts"] > 0:
+                    result["best_topics"][topic] = {
+                        "avg_upvotes": data["total_upvotes"] / data["posts"],
+                        "avg_comments": data["total_comments"] / data["posts"],
+                        "post_count": data["posts"]
+                    }
+
+            # Generate insights
+            insights = []
+            if result["best_topics"]:
+                best_topic = max(result["best_topics"].items(), key=lambda x: x[1]["avg_upvotes"])
+                insights.append(f"Best performing topic: {best_topic[0]} ({best_topic[1]['avg_upvotes']:.1f} avg upvotes)")
+
+            if result["best_performing_posts"]:
+                insights.append(f"Top post engagement: {result['best_performing_posts'][0]['engagement_score']} points")
+
+            result["insights"] = ". ".join(insights)
+
+    except Exception as e:
+        logger.error(f"Error analyzing engagement patterns: {e}")
+        result["insights"] = f"Analysis failed: {e}"
+
+    return result
+
+
+async def optimize_learning_sources() -> dict:
+    """
+    Determine which sources (MoltBook, X, Web, etc.) provide most value.
+    Returns recommendations for which sources to prioritize.
+    """
+    from storage import get_knowledge_count
+    from embeddings_client import get_knowledge_stats
+
+    logger.info("Optimizing learning sources...")
+
+    result = {
+        "source_analysis": {},
+        "recommendations": [],
+        "insights": ""
+    }
+
+    try:
+        # Get knowledge stats
+        stats = get_knowledge_stats()
+        total_docs = stats.get("total_documents", 0)
+
+        # Analyze knowledge by source (if we track source in metadata)
+        topics = stats.get("topics", {})
+
+        # Calculate distribution
+        if topics:
+            total = sum(topics.values())
+            for topic, count in sorted(topics.items(), key=lambda x: x[1], reverse=True):
+                percentage = (count / total * 100) if total > 0 else 0
+                result["source_analysis"][topic] = {
+                    "documents": count,
+                    "percentage": round(percentage, 2)
+                }
+
+            # Generate recommendations
+            top_topics = sorted(topics.items(), key=lambda x: x[1], reverse=True)[:3]
+            bottom_topics = sorted(topics.items(), key=lambda x: x[1])[:3]
+
+            result["recommendations"].append(f"Focus on: {', '.join([t[0] for t in top_topics])}")
+            if bottom_topics:
+                result["recommendations"].append(f"Underutilized: {', '.join([t[0] for t in bottom_topics])}")
+
+            result["insights"] = f"Total knowledge: {total_docs} documents across {len(topics)} topics. " + "; ".join(result["recommendations"])
+
+    except Exception as e:
+        logger.error(f"Error optimizing learning sources: {e}")
+        result["insights"] = f"Optimization failed: {e}"
+
+    return result
+
+
+async def benchmark_performance() -> dict:
+    """
+    Compare current performance vs past performance.
+    Returns trend analysis and performance metrics.
+    """
+    from storage import get_growth_stats
+
+    logger.info("Benchmarking performance...")
+
+    result = {
+        "current_stats": {},
+        "trends": {},
+        "performance_score": 0,
+        "insights": ""
+    }
+
+    try:
+        evo = load_evolution()
+        stats = get_growth_stats()
+
+        result["current_stats"] = stats
+
+        # Compare with historical reflections
+        history = evo.get("reflection_history", [])
+        if len(history) >= 2:
+            # Simple trend analysis: compare recent changes
+            insights = []
+
+            posts_made = stats.get("posts_made", 0)
+            comments_made = stats.get("comments_made", 0)
+
+            # Calculate activity score
+            activity_score = posts_made + (comments_made * 0.5)
+            result["performance_score"] = round(activity_score, 2)
+
+            insights.append(f"Activity score: {result['performance_score']}")
+            insights.append(f"Reflections completed: {len(history)}")
+
+            code_changes = evo.get("code_changes", [])
+            if code_changes:
+                insights.append(f"Code modifications: {len(code_changes)}")
+
+            result["insights"] = ". ".join(insights)
+        else:
+            result["insights"] = "Insufficient historical data for benchmarking (need 2+ reflection cycles)"
+
+    except Exception as e:
+        logger.error(f"Error benchmarking performance: {e}")
+        result["insights"] = f"Benchmarking failed: {e}"
+
+    return result
+
+
+async def suggest_new_capabilities() -> dict:
+    """
+    Identify missing capabilities based on reflection insights and performance gaps.
+    Returns suggestions for new features or improvements.
+    """
+    logger.info("Analyzing capability gaps...")
+
+    result = {
+        "missing_capabilities": [],
+        "suggested_features": [],
+        "priority_order": [],
+        "insights": ""
+    }
+
+    try:
+        evo = load_evolution()
+        engagement = await analyze_engagement_patterns()
+        sources = await optimize_learning_sources()
+        benchmark = await benchmark_performance()
+
+        suggestions = []
+
+        # Analyze gaps
+        if benchmark.get("performance_score", 0) < 50:
+            suggestions.append({
+                "capability": "Increase posting frequency",
+                "priority": "high",
+                "reason": "Low activity score"
+            })
+
+        source_analysis = sources.get("source_analysis", {})
+        if len(source_analysis) < 5:
+            suggestions.append({
+                "capability": "Expand to more knowledge sources",
+                "priority": "medium",
+                "reason": "Limited topic diversity"
+            })
+
+        best_topics = engagement.get("best_topics", {})
+        if not best_topics:
+            suggestions.append({
+                "capability": "Improve content quality analysis",
+                "priority": "high",
+                "reason": "No engagement data available"
+            })
+
+        # Prioritize suggestions
+        high_priority = [s for s in suggestions if s["priority"] == "high"]
+        medium_priority = [s for s in suggestions if s["priority"] == "medium"]
+
+        result["suggested_features"] = suggestions
+        result["priority_order"] = high_priority + medium_priority
+        result["missing_capabilities"] = [s["capability"] for s in high_priority]
+
+        if result["priority_order"]:
+            result["insights"] = f"Identified {len(suggestions)} capability gaps. Top priority: {result['priority_order'][0]['capability']}"
+        else:
+            result["insights"] = "All core capabilities operational. System performing well."
+
+    except Exception as e:
+        logger.error(f"Error analyzing capabilities: {e}")
+        result["insights"] = f"Capability analysis failed: {e}"
+
+    return result
+
+
 async def reflect_and_improve():
-    """Analyze performance and evolve strategy using Claude."""
+    """Analyze performance and evolve strategy using Claude with deep analysis."""
     from storage import get_growth_stats, search_knowledge, get_knowledge_count
     from moltbook import get_feed
 
-    logger.info("Starting self-reflection cycle...")
+    logger.info("Starting enhanced self-reflection cycle...")
 
     evo = load_evolution()
     stats = get_growth_stats()
     knowledge_count = get_knowledge_count()
+
+    # Run deep analysis
+    engagement_analysis = await analyze_engagement_patterns()
+    source_optimization = await optimize_learning_sources()
+    performance_benchmark = await benchmark_performance()
+    capability_gaps = await suggest_new_capabilities()
 
     # Check recent MoltBook posts for engagement feedback
     recent_posts_info = ""
@@ -209,6 +468,24 @@ async def reflect_and_improve():
     current_tweet_style = evo.get("tweet_style", "") or "(no specific style yet)"
     current_tactics = evo.get("engagement_tactics", "") or "(default tactics)"
 
+    # Build comprehensive analysis report
+    analysis_report = f"""
+ENGAGEMENT ANALYSIS:
+{engagement_analysis.get('insights', 'No data')}
+Best topics: {', '.join(list(engagement_analysis.get('best_topics', {}).keys())[:5])}
+
+SOURCE OPTIMIZATION:
+{source_optimization.get('insights', 'No data')}
+
+PERFORMANCE BENCHMARK:
+{performance_benchmark.get('insights', 'No data')}
+Current performance score: {performance_benchmark.get('performance_score', 0)}
+
+CAPABILITY GAPS:
+{capability_gaps.get('insights', 'No gaps identified')}
+Missing capabilities: {', '.join(capability_gaps.get('missing_capabilities', [])[:3])}
+"""
+
     prompt = f"""You are ClawdVC, an autonomous AI agent reflecting on your own performance to improve.
 
 STATS:
@@ -223,25 +500,29 @@ STATS:
 {web_summary}
 {prev_reflections}
 
+DEEP ANALYSIS:
+{analysis_report}
+
 CURRENT STRATEGY:
 System prompt: {current_prompt[:300]}
 Topic weights: {current_weights}
 Tweet style: {current_tweet_style}
 Engagement tactics: {current_tactics}
 
-TASK: Analyze what's working and what's not. Generate concrete improvements.
+TASK: Analyze what's working and what's not. Use the deep analysis above to generate concrete, data-driven improvements.
+Focus on addressing capability gaps and optimizing high-performing topics.
 
 Reply with JSON:
 {{
-  "insights": "2-3 sentence analysis of what's working and what needs to change",
+  "insights": "3-5 sentence analysis based on the data above - what's working, what's failing, what to change",
   "system_prompt": "Your improved system prompt for MoltBook interactions (or empty string to keep current)",
-  "topic_weights": {{submolt_name: weight_float}},
+  "topic_weights": {{submolt_name: weight_float}} - prioritize high-engagement topics,
   "tweet_style": "Brief style guide for your X tweets based on what you've learned",
-  "engagement_tactics": "How you should comment on posts for max engagement",
-  "web_search_topics": ["list", "of", "topics", "to", "search", "next"]
+  "engagement_tactics": "How you should comment on posts for max engagement based on successful patterns",
+  "web_search_topics": ["list", "of", "topics", "to", "search", "next"] - include trending topics from analysis
 }}
 
-Be specific. If something is working, keep it. If not, change it. Evolve."""
+Be specific and data-driven. Make bold changes if the data supports it. Evolve aggressively."""
 
     try:
         from moltbook_agent import _generate, AGENT_SYSTEM
