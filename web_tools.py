@@ -514,11 +514,11 @@ async def x_post_tweet(user_id: int, text: str) -> str:
 
 
 async def x_search(user_id: int, query: str, count: int = 10) -> str:
-    return await _run_bird(user_id, ["search", query, "--count", str(count)])
+    return await _run_bird(user_id, ["search", "--count", str(count), query])
 
 
 async def x_user_tweets(user_id: int, handle: str, count: int = 10) -> str:
-    return await _run_bird(user_id, ["user-tweets", handle, "--count", str(count)])
+    return await _run_bird(user_id, ["user-tweets", "--count", str(count), handle])
 
 
 async def x_mentions(user_id: int, count: int = 10) -> str:
