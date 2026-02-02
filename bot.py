@@ -501,6 +501,11 @@ async def post_init(application):
     asyncio.create_task(research_agent_loop())
     logger.info("Research agent enabled")
 
+    # Start intelligence agent (competitive analysis & strategic intelligence)
+    from intelligence_agent import intelligence_agent_loop
+    asyncio.create_task(intelligence_agent_loop())
+    logger.info("Intelligence agent enabled")
+
 
 def main():
     request = HTTPXRequest(connect_timeout=20.0, read_timeout=60.0, write_timeout=20.0, pool_timeout=20.0)
