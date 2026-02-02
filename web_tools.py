@@ -152,8 +152,9 @@ CUSTOM_TOOLS = [
         "name": "x_user_tweets",
         "description": (
             "Get tweets from a user's profile timeline. "
-            "Use this when the user asks about their own tweets, latest post, or someone else's tweets. "
-            "Pass a Twitter/X handle (without @)."
+            "ALWAYS use this tool when the user asks about their own tweets, their latest post, "
+            "their recent posts, or any specific user's tweets. First call x_whoami to get the handle, "
+            "then call this with that handle. This is the ONLY way to see a user's own posts."
         ),
         "input_schema": {
             "type": "object",
