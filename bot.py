@@ -496,6 +496,11 @@ async def post_init(application):
     else:
         logger.info("MoltBook agent disabled (no API key)")
 
+    # Start research agent (autonomous knowledge gathering)
+    from research_agent import research_agent_loop
+    asyncio.create_task(research_agent_loop())
+    logger.info("Research agent enabled")
+
 
 def main():
     request = HTTPXRequest(connect_timeout=20.0, read_timeout=60.0, write_timeout=20.0, pool_timeout=20.0)
