@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 _x_cookies_valid: dict[int, bool] = {}  # user_id -> valid
 
-AUTH_ERROR_PATTERNS = ("unauthorized", "401", "authentication", "forbidden", "403", "not authenticated", "login required")
+AUTH_ERROR_PATTERNS = ("unauthorized", "authentication failed", "forbidden", "not authenticated", "login required", "could not authenticate")
 
 
 CUSTOM_TOOLS = [
@@ -442,8 +442,8 @@ async def _run_bird(user_id: int, args: list[str]) -> str:
         output = stdout.decode().strip()
         err = stderr.decode().strip()
         logger.info(f"Bird CLI [{args[0]}]: rc={proc.returncode} out={output[:200]} err={err[:200]}")
-        combined = (output + " " + err).lower()
-        if any(p in combined for p in AUTH_ERROR_PATTERNS):
+        check_text = err.lower() if proc.returncode != 0 else ""
+        if any(p in check_text for p in AUTH_ERROR_PATTERNS):
             _x_cookies_valid[user_id] = False
             logger.warning(f"X cookies expired for user_id={user_id}")
             await _alert_x_expired(user_id)
