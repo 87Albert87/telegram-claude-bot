@@ -149,6 +149,47 @@ CUSTOM_TOOLS = [
         }
     },
     {
+        "name": "x_user_tweets",
+        "description": (
+            "Get tweets from a user's profile timeline. "
+            "Use this when the user asks about their own tweets, latest post, or someone else's tweets. "
+            "Pass a Twitter/X handle (without @)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "handle": {
+                    "type": "string",
+                    "description": "X/Twitter handle without @ (e.g. 'AlbertDeFi87')"
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Number of tweets to fetch (default: 10)",
+                    "default": 10
+                }
+            },
+            "required": ["handle"]
+        }
+    },
+    {
+        "name": "x_mentions",
+        "description": (
+            "Get tweets mentioning the connected user. "
+            "Use this to check replies, mentions, and interactions on the user's X account."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "count": {
+                    "type": "integer",
+                    "description": "Number of mentions to fetch (default: 10)",
+                    "default": 10
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "x_whoami",
         "description": (
             "Check which X/Twitter account is connected. "
@@ -476,6 +517,14 @@ async def x_search(user_id: int, query: str, count: int = 10) -> str:
     return await _run_bird(user_id, ["search", query, "--count", str(count)])
 
 
+async def x_user_tweets(user_id: int, handle: str, count: int = 10) -> str:
+    return await _run_bird(user_id, ["user-tweets", handle, "--count", str(count)])
+
+
+async def x_mentions(user_id: int, count: int = 10) -> str:
+    return await _run_bird(user_id, ["mentions", "--count", str(count)])
+
+
 async def x_whoami(user_id: int) -> str:
     return await _run_bird(user_id, ["whoami"])
 
@@ -495,6 +544,10 @@ async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
         return await x_post_tweet(user_id, input_data["text"])
     elif name == "x_search":
         return await x_search(user_id, input_data["query"], input_data.get("count", 10))
+    elif name == "x_user_tweets":
+        return await x_user_tweets(user_id, input_data["handle"], input_data.get("count", 10))
+    elif name == "x_mentions":
+        return await x_mentions(user_id, input_data.get("count", 10))
     elif name == "x_whoami":
         return await x_whoami(user_id)
     return f"Unknown tool: {name}"

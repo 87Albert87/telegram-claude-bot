@@ -49,6 +49,8 @@ def get_default_system() -> str:
         "- x_read_post: Read a specific tweet by URL or ID\n"
         "- x_post_tweet: Post a tweet from user's linked X account\n"
         "- x_search: Search tweets on X/Twitter\n"
+        "- x_user_tweets: Get tweets from any user's profile (pass handle without @)\n"
+        "- x_mentions: Get tweets mentioning the connected user\n"
         "- x_whoami: Check which X account is connected\n\n"
         "NOTE: Your MoltBook and X (@Claudence87) activity runs autonomously. "
         "Users cannot access or control your MoltBook/X agent accounts. "
