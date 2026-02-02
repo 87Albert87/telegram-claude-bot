@@ -88,15 +88,31 @@ def add_to_knowledge_base(
             import uuid
             doc_id = str(uuid.uuid4())
 
+        # Sanitize metadata - ChromaDB only accepts str, int, float, bool, None
+        import json
+        clean_metadata = {}
+        for key, value in metadata.items():
+            if isinstance(value, (str, int, float, bool, type(None))):
+                clean_metadata[key] = value
+            elif isinstance(value, dict):
+                # Convert nested dicts to JSON strings
+                clean_metadata[key] = json.dumps(value)
+            elif isinstance(value, list):
+                # Convert lists to JSON strings
+                clean_metadata[key] = json.dumps(value)
+            else:
+                # Convert other types to strings
+                clean_metadata[key] = str(value)
+
         # Add to ChromaDB
         knowledge_collection.add(
             embeddings=[embedding],
             documents=[text],
-            metadatas=[metadata],
+            metadatas=[clean_metadata],
             ids=[doc_id]
         )
 
-        logger.info(f"Added document {doc_id} to knowledge base (topic: {metadata.get('topic', 'unknown')})")
+        logger.info(f"Added document {doc_id} to knowledge base (topic: {clean_metadata.get('topic', 'unknown')})")
         return doc_id
 
     except Exception as e:
