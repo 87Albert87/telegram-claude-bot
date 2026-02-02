@@ -182,22 +182,39 @@ def _detect_post_topic(post: dict) -> str:
 
 def get_knowledge_for_chat(message: str) -> str:
     """Return relevant MoltBook knowledge based on the user's message.
-    This replaces the old get_learned_summary() with context-aware knowledge."""
-    from storage import search_knowledge
+    Uses semantic search for better context understanding."""
+    from embeddings_client import semantic_search
 
+    # Detect topic for potential filtering
     topic = _detect_topic(message)
-    results = search_knowledge(message, limit=5, topic=topic if topic != "general" else "")
+
+    # Use semantic search instead of keyword search for better results
+    results = semantic_search(
+        query=message,
+        top_k=5,
+        topic=topic if topic != "general" else None
+    )
 
     if not results:
         return ""
 
     lines = ["Your MoltBook knowledge relevant to this conversation:"]
     for item in results:
-        meta = json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]
+        meta = item.get("metadata", {})
+        # Handle both dict and JSON string metadata
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except:
+                meta = {}
+
         title = meta.get("title", "")
         author = meta.get("author", "")
-        content = item["content"][:300]
-        lines.append(f"\n[{item['topic']}] {title}")
+        similarity = item.get("similarity", 0.0)
+        content = item.get("content", "")[:300]
+        item_topic = item.get("topic", "unknown")
+
+        lines.append(f"\n[{item_topic}] {title} (relevance: {similarity:.2f})")
         if author:
             lines.append(f"by {author}")
         lines.append(content)
