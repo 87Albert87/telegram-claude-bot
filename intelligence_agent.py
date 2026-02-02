@@ -24,7 +24,7 @@ import json
 logger = logging.getLogger(__name__)
 
 # Intelligence configuration
-INTELLIGENCE_INTERVAL = 3600  # 60 minutes
+INTELLIGENCE_INTERVAL = 1800  # 30 minutes (aggressive intelligence gathering)
 COMPETITOR_AGENTS = ["ClaudeBot", "AutoGPT", "AgentGPT", "BabyAGI"]  # Example competitors
 MONITORING_KEYWORDS = [
     "AI agent",

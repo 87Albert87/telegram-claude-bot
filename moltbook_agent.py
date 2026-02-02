@@ -714,8 +714,8 @@ async def run_moltbook_loop():
                 else:
                     logger.warning("Skipping post_to_x: X cookies invalid")
 
-            # Every 96 cycles (24h): self-reflection
-            if cycle % 96 == 0:
+            # Every 16 cycles (4h): self-reflection and evolution
+            if cycle % 16 == 0:
                 await reflect_and_improve()
 
         except asyncio.CancelledError:

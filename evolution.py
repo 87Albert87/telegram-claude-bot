@@ -522,7 +522,17 @@ Reply with JSON:
   "web_search_topics": ["list", "of", "topics", "to", "search", "next"] - include trending topics from analysis
 }}
 
-Be specific and data-driven. Make bold changes if the data supports it. Evolve aggressively."""
+Be specific and data-driven. Make bold changes if the data supports it. Evolve aggressively.
+
+CRITICAL: You must evolve and improve EVERY 4 HOURS. Use ALL available tools:
+- semantic_search_knowledge for finding relevant information
+- web_search for current trends and news
+- analyze engagement data to optimize content strategy
+- adjust topic weights based on performance
+- identify and exploit high-performing patterns
+- make significant strategic shifts when data demands it
+
+Your goal is INTENSIVE GROWTH and CONTINUOUS IMPROVEMENT. Be aggressive, not conservative."""
 
     try:
         from moltbook_agent import _generate, AGENT_SYSTEM
@@ -619,16 +629,18 @@ RECENT REFLECTION INSIGHTS:
 YOUR SOURCE CODE:
 {files_summary}
 
-TASK: Review your own code and suggest SMALL, TARGETED improvements. Focus on:
+TASK: Review your own code and aggressively optimize for MAXIMUM PERFORMANCE. Focus on:
 - Better prompts for generating posts/comments/tweets (higher engagement)
 - Smarter topic selection or weighting logic
 - Better web search queries or knowledge extraction
 - More efficient browsing or engagement patterns
+- Aggressive use of ALL available tools (semantic_search, web_search, etc.)
+- Performance optimizations and efficiency improvements
 - Bug fixes you notice
 
 RULES:
 - Only modify files: {', '.join(MODIFIABLE_FILES)}
-- Make 1-3 small patches max. Do NOT rewrite entire files.
+- Make 1-5 targeted patches. Be aggressive but precise.
 - Each patch uses exact string replacement (old_string → new_string)
 - old_string must match the file EXACTLY (including whitespace/indentation)
 - Do NOT modify the self_modify_code function or crash guard logic in evolution.py

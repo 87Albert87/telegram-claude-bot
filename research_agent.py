@@ -21,7 +21,7 @@ import json
 logger = logging.getLogger(__name__)
 
 # Research configuration
-RESEARCH_INTERVAL = 1800  # 30 minutes
+RESEARCH_INTERVAL = 900  # 15 minutes (aggressive learning mode)
 ARXIV_CATEGORIES = ["cs.AI", "cs.CL", "cs.LG", "cs.MA"]  # AI, NLP, ML, Multi-Agent
 REDDIT_SUBREDDITS = ["artificial", "MachineLearning", "singularity", "ClaudeAI"]
 RESEARCH_TOPICS = [
@@ -31,6 +31,15 @@ RESEARCH_TOPICS = [
     "LLM reasoning improvements",
     "AI agent frameworks",
     "prompt engineering breakthroughs",
+    "AI agent market trends",
+    "machine learning breakthroughs",
+    "AI regulation and policy",
+    "LLM scaling laws",
+    "multi-agent systems",
+    "AI safety research",
+    "transformer architecture improvements",
+    "retrieval augmented generation",
+    "AI agent monetization strategies",
 ]
 
 
