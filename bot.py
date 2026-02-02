@@ -97,7 +97,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/finish - Exit current mode (price/prompt)\n\n"
         "Find me on the web:\n"
         "X/Twitter: https://x.com/Claudence87\n"
-        "MoltBook: https://moltbook.com/agent/ClawdVC_"
+        "MoltBook: https://moltbook.com/u/ClawdVC"
     )
 
     await update.message.reply_text(greeting)
@@ -227,7 +227,7 @@ async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "I'm learning and improving every day.\n\n"
     msg += "Find me:\n"
     msg += "X/Twitter: https://x.com/Claudence87\n"
-    msg += "MoltBook: https://moltbook.com/agent/ClawdVC_"
+    msg += "MoltBook: https://moltbook.com/u/ClawdVC"
 
     await update.message.reply_text(msg)
 
@@ -383,6 +383,101 @@ async def disconnect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("X/Twitter account disconnected.")
 
 
+async def set_moltbook_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from config import ADMIN_IDS
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    # Delete message to hide the key
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    args = context.args if context.args else []
+    if len(args) != 1:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Usage: /set_moltbook_key <api_key>",
+        )
+        return
+    key = args[0]
+    # Update .env file
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    lines = []
+    found = False
+    if os.path.exists(env_path):
+        with open(env_path, "r") as f:
+            for line in f:
+                if line.startswith("MOLTBOOK_API_KEY="):
+                    lines.append(f"MOLTBOOK_API_KEY={key}\n")
+                    found = True
+                else:
+                    lines.append(line)
+    if not found:
+        lines.append(f"MOLTBOOK_API_KEY={key}\n")
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+    # Update runtime config
+    import config
+    config.MOLTBOOK_API_KEY = key
+    os.environ["MOLTBOOK_API_KEY"] = key
+    # Start MoltBook loop if not already running
+    from moltbook_agent import run_moltbook_loop
+    asyncio.create_task(run_moltbook_loop())
+    logger.info(f"MoltBook API key set and agent loop started")
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="MoltBook API key saved. Agent loop started. Your message with the key has been deleted.",
+    )
+
+
+async def check_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from config import ADMIN_IDS
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    from web_tools import validate_x_cookies, are_x_cookies_valid
+    from storage import get_x_cookies
+    user_id = 0  # bot's own account
+    cookies = get_x_cookies(user_id)
+    if not cookies:
+        await update.message.reply_text("No X cookies stored for the bot (user_id=0). Use /connect_x to set up.")
+        return
+    sent = await update.message.reply_text("Validating X cookies...")
+    valid = await validate_x_cookies(user_id)
+    if valid:
+        await sent.edit_text("X cookies are valid. Bot's X account is connected.")
+    else:
+        await sent.edit_text("X cookies are EXPIRED. Please reconnect with /connect_x <auth_token> <ct0>.")
+
+
+async def connect_x_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command to set X cookies for the bot's autonomous account (user_id=0)."""
+    from config import ADMIN_IDS
+    from storage import save_x_cookies
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    args = context.args if context.args else []
+    if len(args) != 2:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Usage: /connect_x_bot <auth_token> <ct0>\n\nSets X cookies for the bot's autonomous account (user_id=0).",
+        )
+        return
+    save_x_cookies(0, args[0], args[1])
+    from web_tools import _x_cookies_valid
+    _x_cookies_valid[0] = True
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Bot's X account (user_id=0) connected. Your message has been deleted for security.",
+    )
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
 
@@ -462,6 +557,9 @@ def main():
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("connect_x", connect_x))
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
+    app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
+    app.add_handler(CommandHandler("check_x", check_x))
+    app.add_handler(CommandHandler("set_moltbook_key", set_moltbook_key))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.run_polling()
 

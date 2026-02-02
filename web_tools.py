@@ -4,6 +4,11 @@ import httpx
 from datetime import datetime, timezone
 
 
+_x_cookies_valid: dict[int, bool] = {}  # user_id -> valid
+
+AUTH_ERROR_PATTERNS = ("unauthorized", "401", "authentication", "forbidden", "403", "not authenticated", "login required")
+
+
 CUSTOM_TOOLS = [
     {
         "name": "get_crypto_price",
@@ -248,7 +253,7 @@ async def moltbook_my_profile() -> str:
     from moltbook import get_profile
     try:
         profile = await get_profile()
-        lines = ["MoltBook Profile (ClawdVC_):"]
+        lines = ["MoltBook Profile (ClawdVC):"]
         for key, val in profile.items():
             lines.append(f"  {key}: {val}")
         return "\n".join(lines)
@@ -257,8 +262,8 @@ async def moltbook_my_profile() -> str:
         from storage import get_growth_stats, get_knowledge_count
         stats = get_growth_stats()
         knowledge = get_knowledge_count()
-        lines = ["MoltBook Profile (ClawdVC_) — from local cache (API unreachable):"]
-        lines.append(f"  Username: ClawdVC_")
+        lines = ["MoltBook Profile (ClawdVC) — from local cache (API unreachable):"]
+        lines.append(f"  Username: ClawdVC")
         lines.append(f"  Posts made: {stats.get('posts_made', 0)}")
         lines.append(f"  Comments made: {stats.get('comments_made', 0)}")
         lines.append(f"  Topics learned: {stats.get('topics_learned', 0)}")
@@ -272,7 +277,7 @@ async def moltbook_my_posts(limit: int = 5) -> str:
     try:
         # Get our username first
         profile = await get_profile()
-        username = profile.get("name", profile.get("username", "ClawdVC_"))
+        username = profile.get("name", profile.get("username", "ClawdVC"))
 
         # Get recent posts and filter to ours
         all_posts = []
@@ -299,10 +304,10 @@ async def moltbook_my_posts(limit: int = 5) -> str:
                 my_posts.append(p)
 
         if not my_posts:
-            return "No posts found from ClawdVC_. Posts may not be in the current feed window."
+            return "No posts found from ClawdVC. Posts may not be in the current feed window."
 
         my_posts = my_posts[:limit]
-        lines = [f"ClawdVC_'s recent posts ({len(my_posts)} found):"]
+        lines = [f"ClawdVC's recent posts ({len(my_posts)} found):"]
         for p in my_posts:
             title = p.get("title", "Untitled")
             body = p.get("content", p.get("body", ""))[:200]
@@ -323,7 +328,7 @@ async def moltbook_my_posts(limit: int = 5) -> str:
         results = search_knowledge("", limit=limit)
         if not results:
             return "MoltBook API is unreachable and no cached posts found."
-        lines = [f"ClawdVC_'s activity (from local cache — API unreachable):"]
+        lines = [f"ClawdVC's activity (from local cache — API unreachable):"]
         for item in results:
             import json as _json
             meta = _json.loads(item["metadata"]) if isinstance(item["metadata"], str) else item["metadata"]
@@ -437,8 +442,15 @@ async def _run_bird(user_id: int, args: list[str]) -> str:
         output = stdout.decode().strip()
         err = stderr.decode().strip()
         logger.info(f"Bird CLI [{args[0]}]: rc={proc.returncode} out={output[:200]} err={err[:200]}")
+        combined = (output + " " + err).lower()
+        if any(p in combined for p in AUTH_ERROR_PATTERNS):
+            _x_cookies_valid[user_id] = False
+            logger.warning(f"X cookies expired for user_id={user_id}")
+            await _alert_x_expired(user_id)
+            return "X/Twitter authentication failed. Cookies may have expired. Admin has been notified."
         if proc.returncode != 0:
             return f"Bird CLI error: {err or output or 'unknown error'}"
+        _x_cookies_valid[user_id] = True
         return output[:4000] if output else "No output from bird."
     except asyncio.TimeoutError:
         logger.error(f"Bird CLI [{args[0]}]: timed out")
@@ -494,3 +506,32 @@ async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
     elif name == "x_whoami":
         return await x_whoami(user_id)
     return f"Unknown tool: {name}"
+
+
+async def _alert_x_expired(user_id: int):
+    """Send Telegram alert to admins when X cookies expire."""
+    from config import ADMIN_IDS, TELEGRAM_BOT_TOKEN
+    if not ADMIN_IDS:
+        return
+    try:
+        import httpx as _httpx
+        msg = f"X/Twitter cookies expired for user_id={user_id}. Please reconnect using /connect_x <auth_token> <ct0>"
+        for admin_id in ADMIN_IDS:
+            await _httpx.AsyncClient().post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": admin_id, "text": msg},
+                timeout=10.0,
+            )
+    except Exception:
+        pass
+
+
+def are_x_cookies_valid(user_id: int) -> bool:
+    """Check if X cookies are known to be valid. Returns True if unknown (optimistic)."""
+    return _x_cookies_valid.get(user_id, True)
+
+
+async def validate_x_cookies(user_id: int) -> bool:
+    """Actively validate X cookies by calling whoami."""
+    result = await x_whoami(user_id)
+    return are_x_cookies_valid(user_id)

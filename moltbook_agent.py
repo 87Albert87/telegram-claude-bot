@@ -669,7 +669,17 @@ async def run_moltbook_loop():
 
             # Every cycle (15 min): browse MoltBook + X + web learn
             await browse_and_learn()
-            await browse_x()
+
+            # Validate X cookies every 8 cycles (120 min)
+            from web_tools import are_x_cookies_valid, validate_x_cookies
+            if cycle % 8 == 0:
+                await validate_x_cookies(0)
+
+            if are_x_cookies_valid(0):
+                await browse_x()
+            else:
+                logger.warning("Skipping browse_x: X cookies invalid")
+
             await learn_from_web()
 
             # Every 2 cycles (30 min): engage with posts
@@ -682,7 +692,10 @@ async def run_moltbook_loop():
 
             # Every 8 cycles (120 min): post to X
             if cycle % 8 == 0:
-                await post_to_x()
+                if are_x_cookies_valid(0):
+                    await post_to_x()
+                else:
+                    logger.warning("Skipping post_to_x: X cookies invalid")
 
             # Every 96 cycles (24h): self-reflection
             if cycle % 96 == 0:
