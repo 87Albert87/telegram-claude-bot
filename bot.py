@@ -206,6 +206,99 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nothing to finish.")
 
 
+async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Generate an image using nano-banana-pro (Gemini 3 Pro Image)."""
+    from resilience import unstoppable
+    import subprocess
+    import os
+    from datetime import datetime
+
+    prompt = " ".join(context.args) if context.args else ""
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
+    if not prompt:
+        await update.message.reply_text(
+            "Please provide a prompt:\n\n"
+            "/image <description>\n\n"
+            "Example:\n"
+            "/image A serene Japanese garden with cherry blossoms\n\n"
+            "Add 'high-res' or '4K' for higher quality."
+        )
+        return
+
+    # Send generating message
+    status_msg = await update.message.reply_text("🎨 Generating your image...")
+
+    try:
+        # Determine resolution
+        resolution = "1K"  # default
+        if any(word in prompt.lower() for word in ["4k", "high-res", "hi-res", "ultra"]):
+            resolution = "4K"
+            prompt = prompt.replace("4K", "").replace("4k", "").replace("high-res", "").replace("hi-res", "").replace("ultra", "").strip()
+        elif any(word in prompt.lower() for word in ["2k", "medium", "normal"]):
+            resolution = "2K"
+            prompt = prompt.replace("2K", "").replace("2k", "").replace("medium", "").replace("normal", "").strip()
+
+        # Generate filename
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        # Create short descriptive name from prompt
+        desc_words = prompt.lower().split()[:3]
+        desc_name = "-".join(word for word in desc_words if word.isalnum())
+        if not desc_name:
+            desc_name = "image"
+        filename = f"{timestamp}-{desc_name}.png"
+
+        # Run nano-banana-pro script
+        script_path = os.path.expanduser("~/.codex/skills/nano-banana-pro/scripts/generate_image.py")
+
+        result = subprocess.run(
+            ["uv", "run", script_path, "--prompt", prompt, "--filename", filename, "--resolution", resolution],
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minute timeout
+        )
+
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            logger.error(f"Image generation failed: {error_msg}")
+            await status_msg.edit_text(f"❌ Image generation failed:\n{error_msg[:500]}")
+            return
+
+        # Check if file was created
+        if not os.path.exists(filename):
+            await status_msg.edit_text(f"❌ Image file not found: {filename}")
+            return
+
+        # Send the image
+        await status_msg.edit_text(f"✅ Image generated! Sending...")
+
+        with open(filename, 'rb') as photo:
+            await update.message.reply_photo(
+                photo=photo,
+                caption=f"🎨 Generated: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\nResolution: {resolution}"
+            )
+
+        # Delete the status message
+        await status_msg.delete()
+
+        # Clean up the file
+        try:
+            os.remove(filename)
+        except:
+            pass
+
+        logger.info(f"Image generated successfully for user {update.effective_user.id}: {prompt[:50]}")
+
+    except subprocess.TimeoutExpired:
+        await status_msg.edit_text("❌ Image generation timed out. Please try a simpler prompt.")
+    except Exception as e:
+        logger.error(f"Image generation error: {e}")
+        await status_msg.edit_text(f"❌ Error: {str(e)[:500]}")
+
+
 async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from storage import get_growth_stats, get_knowledge_count
 
@@ -523,6 +616,7 @@ def main():
     app.add_handler(CommandHandler("finish", finish))
     app.add_handler(CommandHandler("growth", growth))
     app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("image", image))
     app.add_handler(CommandHandler("connect_x", connect_x))
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
     app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
