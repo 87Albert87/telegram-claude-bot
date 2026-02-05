@@ -4,7 +4,7 @@ import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from config import TELEGRAM_BOT_TOKEN
+from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY
 from claude_client import ask_stream, clear_history, set_system_prompt
 from rate_limit import is_rate_limited
 from web_tools import get_crypto_price, get_multiple_crypto_prices, search_coin
@@ -531,6 +531,96 @@ async def connect_x_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def transcribe_voice(file_path: str) -> str:
+    """Transcribe voice message using Gemini."""
+    if not GEMINI_API_KEY:
+        return "[Voice transcription unavailable - no Gemini API key]"
+
+    try:
+        from google import genai
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        # Upload the audio file
+        with open(file_path, "rb") as f:
+            audio_data = f.read()
+
+        # Use Gemini to transcribe
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                {
+                    "parts": [
+                        {"text": "Transcribe this audio message accurately. Return ONLY the transcription, nothing else. If the audio is in a non-English language, transcribe it in that language."},
+                        {"inline_data": {"mime_type": "audio/ogg", "data": __import__('base64').b64encode(audio_data).decode()}}
+                    ]
+                }
+            ]
+        )
+
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Voice transcription error: {e}", exc_info=True)
+        return f"[Could not transcribe voice: {e}]"
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice messages by transcribing and processing with Claude."""
+    # Only respond in private chats
+    if update.effective_chat.type != "private":
+        return
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
+    try:
+        # Download voice file
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+
+        # Save to temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        await file.download_to_drive(tmp_path)
+
+        # Transcribe
+        sent = await update.message.reply_text("🎤 Transcribing...")
+        transcription = await transcribe_voice(tmp_path)
+
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        if transcription.startswith("["):
+            await sent.edit_text(transcription)
+            return
+
+        # Show transcription and process with Claude
+        await sent.edit_text(f"🎤 \"{transcription}\"\n\nThinking...")
+
+        # Process with Claude
+        last_text = ""
+        async for current_text in ask_stream(update.effective_chat.id, transcription, user_id=update.effective_user.id):
+            if current_text != last_text:
+                try:
+                    display = f"🎤 \"{transcription}\"\n\n{current_text}"
+                    if len(display) <= 4096:
+                        await sent.edit_text(display)
+                    else:
+                        await sent.edit_text(current_text)
+                    last_text = current_text
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.error(f"Voice handling error: {e}", exc_info=True)
+        await update.message.reply_text("Something went wrong processing your voice message.")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
 
@@ -629,6 +719,7 @@ def main():
     app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
     app.add_handler(CommandHandler("check_x", check_x))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.run_polling()
 
 
