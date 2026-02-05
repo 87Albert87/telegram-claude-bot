@@ -103,9 +103,43 @@ def set_system_prompt(chat_id: int, prompt: str):
     save_system_prompt(chat_id, prompt)
 
 
-async def ask_stream(chat_id: int, text: str, user_id: int = 0, on_status=None) -> AsyncIterator[str]:
+async def ask_stream(chat_id: int, text: str, user_id: int = 0, on_status=None, attachments: list = None) -> AsyncIterator[str]:
+    """
+    Send a message to Claude with optional attachments (images, PDFs, etc.)
+
+    attachments: list of dicts with keys:
+        - type: "image" or "document"
+        - media_type: e.g. "image/jpeg", "application/pdf", "text/plain"
+        - data: base64-encoded content
+    """
     history = get_history(chat_id)
-    history.append({"role": "user", "content": text})
+
+    # Build content blocks
+    if attachments:
+        content = []
+        for att in attachments:
+            if att["type"] == "image":
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": att["media_type"],
+                        "data": att["data"]
+                    }
+                })
+            elif att["type"] == "document":
+                content.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": att["media_type"],
+                        "data": att["data"]
+                    }
+                })
+        content.append({"type": "text", "text": text})
+        history.append({"role": "user", "content": content})
+    else:
+        history.append({"role": "user", "content": text})
 
     if len(history) > MAX_HISTORY:
         history[:] = history[-MAX_HISTORY:]

@@ -10,6 +10,9 @@ chromadb>=0.5.0
 # Image generation
 google-genai>=1.0.0
 
+# Document processing
+python-docx>=1.0.0
+
 # Research & trend monitoring
 pytrends
 arxiv

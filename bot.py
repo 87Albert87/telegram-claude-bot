@@ -621,6 +621,150 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong processing your voice message.")
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle photo messages - analyze with Claude's vision."""
+    if update.effective_chat.type != "private":
+        return
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
+    try:
+        # Get the largest photo
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+
+        # Download photo
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = tmp.name
+        await file.download_to_drive(tmp_path)
+
+        # Read and encode
+        import base64
+        with open(tmp_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode()
+
+        # Clean up
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        # Get caption or default prompt
+        caption = update.message.caption or "What's in this image? Describe and analyze it."
+
+        sent = await update.message.reply_text("🖼️ Analyzing image...")
+
+        # Send to Claude with image
+        attachments = [{"type": "image", "media_type": "image/jpeg", "data": image_data}]
+
+        last_text = ""
+        async for current_text in ask_stream(update.effective_chat.id, caption, user_id=update.effective_user.id, attachments=attachments):
+            if current_text != last_text:
+                try:
+                    await sent.edit_text(current_text[:4096])
+                    last_text = current_text
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.error(f"Photo handling error: {e}", exc_info=True)
+        await update.message.reply_text("Something went wrong analyzing the image.")
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle document messages - analyze PDFs, read text files."""
+    if update.effective_chat.type != "private":
+        return
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
+    doc = update.message.document
+    file_name = doc.file_name or "document"
+    mime_type = doc.mime_type or ""
+
+    # Check supported types
+    supported_types = {
+        "application/pdf": "pdf",
+        "text/plain": "txt",
+        "text/markdown": "txt",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/msword": "doc",
+    }
+
+    file_ext = file_name.split(".")[-1].lower() if "." in file_name else ""
+
+    try:
+        # Download file
+        file = await context.bot.get_file(doc.file_id)
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False) as tmp:
+            tmp_path = tmp.name
+        await file.download_to_drive(tmp_path)
+
+        import base64
+        caption = update.message.caption or f"Analyze this {file_ext.upper()} file. Summarize its contents."
+
+        sent = await update.message.reply_text(f"📄 Reading {file_name}...")
+
+        attachments = []
+        text_content = None
+
+        # Handle PDFs - Claude supports natively
+        if mime_type == "application/pdf" or file_ext == "pdf":
+            with open(tmp_path, "rb") as f:
+                pdf_data = base64.b64encode(f.read()).decode()
+            attachments = [{"type": "document", "media_type": "application/pdf", "data": pdf_data}]
+
+        # Handle text files
+        elif file_ext in ("txt", "md", "py", "js", "json", "csv", "xml", "html", "css", "yaml", "yml", "sh", "log"):
+            with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+                text_content = f.read()[:50000]  # Limit to 50k chars
+            caption = f"Here's the content of {file_name}:\n\n```\n{text_content}\n```\n\n{caption}"
+
+        # Handle DOCX
+        elif file_ext == "docx":
+            try:
+                from docx import Document
+                doc_file = Document(tmp_path)
+                text_content = "\n".join([para.text for para in doc_file.paragraphs])[:50000]
+                caption = f"Here's the content of {file_name}:\n\n{text_content}\n\n{caption}"
+            except ImportError:
+                await sent.edit_text("❌ DOCX support not installed. Please use PDF or TXT files.")
+                return
+            except Exception as e:
+                await sent.edit_text(f"❌ Could not read DOCX: {e}")
+                return
+
+        else:
+            await sent.edit_text(f"❌ Unsupported file type: {file_ext}\n\nSupported: PDF, TXT, MD, DOCX, code files")
+            return
+
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        # Send to Claude
+        last_text = ""
+        async for current_text in ask_stream(update.effective_chat.id, caption, user_id=update.effective_user.id, attachments=attachments if attachments else None):
+            if current_text != last_text:
+                try:
+                    await sent.edit_text(current_text[:4096])
+                    last_text = current_text
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.error(f"Document handling error: {e}", exc_info=True)
+        await update.message.reply_text("Something went wrong reading the document.")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
 
@@ -720,6 +864,8 @@ def main():
     app.add_handler(CommandHandler("check_x", check_x))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.run_polling()
 
 
