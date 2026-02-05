@@ -563,6 +563,49 @@ async def transcribe_voice(file_path: str) -> str:
         return f"[Could not transcribe voice: {e}]"
 
 
+async def analyze_video(file_path: str, prompt: str = None) -> str:
+    """Analyze video using Gemini."""
+    if not GEMINI_API_KEY:
+        return "[Video analysis unavailable - no Gemini API key]"
+
+    try:
+        from google import genai
+        import base64
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        # Read video file
+        with open(file_path, "rb") as f:
+            video_data = f.read()
+
+        # Check file size (Gemini has limits)
+        size_mb = len(video_data) / (1024 * 1024)
+        if size_mb > 20:
+            return f"[Video too large: {size_mb:.1f}MB. Maximum is 20MB]"
+
+        # Default prompt
+        if not prompt:
+            prompt = "Analyze this video in detail. Describe what's happening, any text visible, people, objects, actions, and the overall context. If there's audio/speech, transcribe it."
+
+        # Use Gemini to analyze
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                {
+                    "parts": [
+                        {"text": prompt},
+                        {"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(video_data).decode()}}
+                    ]
+                }
+            ]
+        )
+
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Video analysis error: {e}", exc_info=True)
+        return f"[Could not analyze video: {e}]"
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages by transcribing and processing with Claude."""
     # Only respond in private chats
@@ -619,6 +662,72 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Voice handling error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong processing your voice message.")
+
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle video messages - analyze with Gemini."""
+    if update.effective_chat.type != "private":
+        return
+
+    if is_rate_limited(update.effective_user.id):
+        await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+
+    try:
+        # Get video (could be VIDEO or VIDEO_NOTE)
+        video = update.message.video or update.message.video_note
+        if not video:
+            return
+
+        # Check file size
+        if video.file_size and video.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("Video too large. Maximum size is 20MB.")
+            return
+
+        file = await context.bot.get_file(video.file_id)
+
+        # Download video
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp_path = tmp.name
+        await file.download_to_drive(tmp_path)
+
+        # Get caption or default prompt
+        caption = update.message.caption or None
+
+        sent = await update.message.reply_text("🎬 Analyzing video...")
+
+        # Analyze with Gemini
+        analysis = await analyze_video(tmp_path, caption)
+
+        # Clean up
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+        if analysis.startswith("["):
+            await sent.edit_text(analysis)
+            return
+
+        # Send analysis to Claude for a conversational response
+        context_prompt = f"The user sent a video. Here's the analysis:\n\n{analysis}"
+        if caption:
+            context_prompt += f"\n\nUser's question about the video: {caption}"
+        context_prompt += "\n\nProvide a helpful response based on this video analysis."
+
+        last_text = ""
+        async for current_text in ask_stream(update.effective_chat.id, context_prompt, user_id=update.effective_user.id):
+            if current_text != last_text:
+                try:
+                    await sent.edit_text(current_text[:4096])
+                    last_text = current_text
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.error(f"Video handling error: {e}", exc_info=True)
+        await update.message.reply_text("Something went wrong analyzing the video.")
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -865,6 +974,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, handle_video))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.run_polling()
 
