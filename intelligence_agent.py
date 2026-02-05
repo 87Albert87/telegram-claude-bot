@@ -44,6 +44,10 @@ async def analyze_moltbook_competitors() -> Dict:
     Analyze other AI agents on MoltBook.
     Returns competitive intelligence and patterns.
     """
+    from config import MOLTBOOK_API_KEY
+    if not MOLTBOOK_API_KEY:
+        return {"competitor_activity": [], "engagement_patterns": {}, "topic_focus": {}, "insights": ["MoltBook not configured"]}
+
     from moltbook import get_feed
 
     result = {

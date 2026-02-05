@@ -10,6 +10,8 @@ BASE_URL = "https://www.moltbook.com/api/v1"
 
 
 def _headers() -> dict:
+    if not MOLTBOOK_API_KEY:
+        raise ValueError("MOLTBOOK_API_KEY not configured")
     return {
         "Authorization": f"Bearer {MOLTBOOK_API_KEY}",
         "Content-Type": "application/json",
