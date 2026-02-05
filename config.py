@@ -9,7 +9,6 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-5-20251101")
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "50"))
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()}
 CHANNEL_ID = os.getenv("CHANNEL_ID", "")
-BRAVE_SEARCH_API_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "")
 MOLTBOOK_API_KEY = os.getenv("MOLTBOOK_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 RATE_LIMIT = int(os.getenv("RATE_LIMIT", "10"))
