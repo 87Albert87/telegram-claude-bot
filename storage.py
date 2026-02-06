@@ -44,6 +44,69 @@ def get_conn() -> sqlite3.Connection:
                 connected_at TEXT NOT NULL
             )
         """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT DEFAULT '',
+                first_name TEXT DEFAULT '',
+                first_seen TEXT NOT NULL,
+                trial_expires TEXT NOT NULL,
+                is_blocked INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                chat_type TEXT NOT NULL DEFAULT 'private',
+                plan TEXT NOT NULL,
+                period TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                starts_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                daily_limit INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                payment_method TEXT DEFAULT '',
+                telegram_payment_charge_id TEXT DEFAULT '',
+                provider_payment_charge_id TEXT DEFAULT ''
+            )
+        """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS daily_usage (
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                date TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, chat_id, date)
+            )
+        """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS message_packs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                quantity INTEGER NOT NULL DEFAULT 50,
+                used INTEGER NOT NULL DEFAULT 0,
+                purchased_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                telegram_payment_charge_id TEXT DEFAULT '',
+                provider_payment_charge_id TEXT DEFAULT ''
+            )
+        """)
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                payment_type TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                telegram_payment_charge_id TEXT NOT NULL,
+                provider_payment_charge_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
         _conn.commit()
     return _conn
 

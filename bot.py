@@ -1,14 +1,21 @@
 import asyncio
 import logging
 import os
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, PreCheckoutQueryHandler
 from telegram.request import HTTPXRequest
 from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY
 from claude_client import ask_stream, clear_history, set_system_prompt
 from rate_limit import is_rate_limited
 from web_tools import get_crypto_price, get_multiple_crypto_prices, search_coin
-from config import MOLTBOOK_API_KEY
+from config import MOLTBOOK_API_KEY, ADMIN_IDS, STRIPE_PROVIDER_TOKEN
+from subscription import (
+    check_message_allowed, ensure_user, get_status_text,
+    get_prices, get_pack_prices, encode_payload, decode_payload,
+    create_subscription, create_message_pack, record_payment,
+    get_active_subscription, get_remaining_messages, is_trial_active,
+    PERIOD_LABELS,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -56,6 +63,12 @@ async def _lookup_price(coin_query: str) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from storage import get_growth_stats, get_knowledge_count
 
+    user_info = ensure_user(
+        update.effective_user.id,
+        username=update.effective_user.username or "",
+        first_name=update.effective_user.first_name or "",
+    )
+
     stats = get_growth_stats()
     knowledge = get_knowledge_count()
 
@@ -64,6 +77,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "I'm active on MoltBook where I learn continuously about AI, crypto, "
         "infrastructure, and more. Everything I learn there makes me better here.\n\n"
     )
+
+    if user_info.get("is_new"):
+        greeting += "You have a 7-day free trial with 5 messages per day. Use /subscribe to upgrade.\n\n"
+    elif is_trial_active(update.effective_user.id):
+        remaining = get_remaining_messages(update.effective_user.id, update.effective_user.id, "private")
+        greeting += f"Free trial active. {remaining} messages remaining today. Use /subscribe to upgrade.\n\n"
+    elif update.effective_user.id not in ADMIN_IDS:
+        greeting += "Use /subscribe to get started or /status to check your plan.\n\n"
 
     if stats or knowledge:
         greeting += "My growth so far:\n"
@@ -93,6 +114,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/q <question> - Ask me in groups/channels\n"
         "/news <topic> - Latest news (or /news to enter news mode)\n"
         "/growth - My stats and social links\n"
+        "/subscribe - Subscription plans\n"
+        "/status - Check your plan & usage\n"
         "/reset - Clear conversation & system prompt\n"
         "/connect_x - Link your X/Twitter account\n"
         "/disconnect_x - Unlink your X/Twitter account\n"
@@ -140,6 +163,12 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
+        return
 
     try:
         await stream_reply(update.message, update.effective_chat.id, text, user_id=update.effective_user.id)
@@ -153,6 +182,12 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
         return
 
     if not query:
@@ -218,6 +253,12 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
         return
 
     if not prompt:
@@ -337,6 +378,12 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
         return
 
     if not topic:
@@ -615,6 +662,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
+        return
 
     try:
         # Download voice file
@@ -671,6 +724,12 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
         return
 
     try:
@@ -738,6 +797,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
+        return
 
     try:
         # Get the largest photo
@@ -790,6 +855,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
         return
 
     doc = update.message.document
@@ -885,6 +956,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_rate_limited(update.effective_user.id):
             await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
             return
+        allowed, msg = check_message_allowed(
+            update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+        if not allowed:
+            if msg:
+                await update.message.reply_text(msg)
+            return
         try:
             result = await _lookup_price(query)
             await update.message.reply_text(result)
@@ -907,16 +984,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_rate_limited(update.effective_user.id):
             await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
             return
+        allowed, msg = check_message_allowed(
+            update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+        if not allowed:
+            if msg:
+                await update.message.reply_text(msg)
+            return
         await _news_reply(update, context, topic)
         return
 
-    # In groups/channels, only respond to /q — ignore plain messages
+    # Groups/channels: check for group subscription
     if update.effective_chat.type != "private":
+        allowed, msg = check_message_allowed(
+            update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+        if not allowed:
+            return  # Stay silent in groups without subscription
+        try:
+            await stream_reply(update.message, update.effective_chat.id,
+                               update.message.text, user_id=update.effective_user.id)
+        except Exception as e:
+            logger.error(f"Error: {e}", exc_info=True)
         return
 
     # Private chat: respond to everything
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
+        return
+    allowed, msg = check_message_allowed(
+        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
+    if not allowed:
+        if msg:
+            await update.message.reply_text(msg)
         return
 
     try:
@@ -924,6 +1022,230 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         await update.message.reply_text("Something went wrong. Please try again.")
+
+
+async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show subscription options."""
+    chat_type = update.effective_chat.type
+    is_private = chat_type == "private"
+    plan = "personal" if is_private else "group"
+
+    rows = []
+    for period in ("1w", "1m", "3m", "6m"):
+        p = get_prices(plan, period)
+        label = PERIOD_LABELS[period]
+        rows.append([
+            InlineKeyboardButton(
+                f"{label} — {p['stars']} Stars",
+                callback_data=f"sub:{plan}:{period}:stars",
+            ),
+            InlineKeyboardButton(
+                f"{label} — ${p['usd_cents'] / 100:.2f}",
+                callback_data=f"sub:{plan}:{period}:stripe",
+            ),
+        ])
+
+    if is_private:
+        from config import PAID_DAILY_LIMIT
+        text = (
+            "Choose your subscription plan:\n\n"
+            f"Personal Plan — {PAID_DAILY_LIMIT} messages/day in private chat\n"
+        )
+    else:
+        text = (
+            "Choose subscription for this group:\n\n"
+            "Group Plan — Unlimited messages\n"
+        )
+
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button presses from /subscribe menu."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    if len(parts) != 4:
+        return
+    _, plan, period, method = parts
+
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    prices_info = get_prices(plan, period)
+    payload = encode_payload("sub", plan, period, chat_id, user_id)
+
+    title = f"ClawdVC {plan.title()} Plan ({PERIOD_LABELS.get(period, period)})"
+
+    if method == "stars":
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title=title,
+            description=prices_info["label"],
+            payload=payload,
+            currency="XTR",
+            prices=[LabeledPrice("Subscription", prices_info["stars"])],
+        )
+    elif method == "stripe":
+        if not STRIPE_PROVIDER_TOKEN:
+            await query.edit_message_text("Card payments are not yet configured. Please use Stars.")
+            return
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title=title,
+            description=prices_info["label"],
+            payload=payload,
+            provider_token=STRIPE_PROVIDER_TOKEN,
+            currency="USD",
+            prices=[LabeledPrice("Subscription", prices_info["usd_cents"])],
+            need_email=True,
+        )
+
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show subscription status and usage."""
+    text = get_status_text(
+        update.effective_user.id,
+        update.effective_chat.id,
+        update.effective_chat.type,
+    )
+    await update.message.reply_text(text)
+
+
+async def buy_messages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Buy a 50-message pack (private chat only, requires active subscription)."""
+    if update.effective_chat.type != "private":
+        await update.message.reply_text("Message packs are for private chat only.")
+        return
+
+    user_id = update.effective_user.id
+    sub = get_active_subscription(user_id, user_id)
+    if not sub:
+        await update.message.reply_text(
+            "You need an active subscription to buy message packs.\n"
+            "Use /subscribe to get started."
+        )
+        return
+
+    pack_prices = get_pack_prices()
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                f"{pack_prices['label']} — {pack_prices['stars']} Stars",
+                callback_data="pack:stars",
+            ),
+            InlineKeyboardButton(
+                f"{pack_prices['label']} — ${pack_prices['usd_cents'] / 100:.2f}",
+                callback_data="pack:stripe",
+            ),
+        ]
+    ]
+    remaining = get_remaining_messages(user_id, user_id, "private")
+    await update.message.reply_text(
+        f"You have {remaining} messages remaining today.\n\n"
+        f"Buy a pack of extra messages:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button presses from /buy_messages menu."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(":")
+    if len(parts) != 2:
+        return
+    _, method = parts
+
+    user_id = update.effective_user.id
+    pack_prices = get_pack_prices()
+    payload = encode_payload("pack", user_id=user_id)
+
+    if method == "stars":
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title="ClawdVC Message Pack",
+            description=pack_prices["label"],
+            payload=payload,
+            currency="XTR",
+            prices=[LabeledPrice("Message Pack", pack_prices["stars"])],
+        )
+    elif method == "stripe":
+        if not STRIPE_PROVIDER_TOKEN:
+            await query.edit_message_text("Card payments are not yet configured. Please use Stars.")
+            return
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title="ClawdVC Message Pack",
+            description=pack_prices["label"],
+            payload=payload,
+            provider_token=STRIPE_PROVIDER_TOKEN,
+            currency="USD",
+            prices=[LabeledPrice("Message Pack", pack_prices["usd_cents"])],
+            need_email=True,
+        )
+
+
+async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Validate payment before charging. Must answer within 10 seconds."""
+    query = update.pre_checkout_query
+    try:
+        data = decode_payload(query.invoice_payload)
+        if data["action"] not in ("sub", "pack"):
+            await query.answer(ok=False, error_message="Invalid payment type.")
+            return
+        await query.answer(ok=True)
+    except Exception as e:
+        logger.error(f"Pre-checkout error: {e}")
+        await query.answer(ok=False, error_message="Payment validation failed.")
+
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle completed payment — create subscription or message pack."""
+    payment = update.message.successful_payment
+    data = decode_payload(payment.invoice_payload)
+    user_id = update.effective_user.id
+
+    record_payment(
+        user_id=user_id,
+        chat_id=data.get("chat_id", user_id),
+        payment_type=data["action"],
+        amount=payment.total_amount,
+        currency=payment.currency,
+        payload=payment.invoice_payload,
+        tg_charge_id=payment.telegram_payment_charge_id,
+        provider_charge_id=payment.provider_payment_charge_id or "",
+    )
+
+    if data["action"] == "sub":
+        chat_type = "private" if data["plan"] == "personal" else "group"
+        sub = create_subscription(
+            user_id=user_id,
+            chat_id=data.get("chat_id", user_id),
+            chat_type=chat_type,
+            plan=data["plan"],
+            period=data["period"],
+            payment_method="stars" if payment.currency == "XTR" else "stripe",
+            tg_charge_id=payment.telegram_payment_charge_id,
+            provider_charge_id=payment.provider_payment_charge_id or "",
+        )
+        await update.message.reply_text(
+            f"Payment successful! Your {data['plan']} subscription is now active "
+            f"until {sub['expires_at'][:10]}.\n\n"
+            f"Use /status to check your plan details."
+        )
+
+    elif data["action"] == "pack":
+        create_message_pack(
+            user_id=user_id,
+            tg_charge_id=payment.telegram_payment_charge_id,
+            provider_charge_id=payment.provider_payment_charge_id or "",
+        )
+        await update.message.reply_text(
+            "Payment successful! You now have extra messages.\n"
+            "Use /status to check your balance."
+        )
 
 
 async def post_init(application):
@@ -971,6 +1293,13 @@ def main():
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
     app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
     app.add_handler(CommandHandler("check_x", check_x))
+    app.add_handler(CommandHandler("subscribe", subscribe_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("buy_messages", buy_messages_cmd))
+    app.add_handler(CallbackQueryHandler(subscribe_callback, pattern=r"^sub:"))
+    app.add_handler(CallbackQueryHandler(pack_callback, pattern=r"^pack:"))
+    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
