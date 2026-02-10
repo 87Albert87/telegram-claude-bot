@@ -37,7 +37,7 @@ _TRADING_KW = frozenset({
     "trade", "swap", "buy", "sell", "defi", "portfolio", "wallet",
     "velvet", "rebalance", "position", "token safety", "honeypot",
     "earn", "profit", "trading goal", "execute trade", "connect wallet",
-    "slippage", "liquidity", "1inch", "dex", "yield",
+    "slippage", "liquidity", "dex", "yield",
 })
 
 
@@ -100,10 +100,11 @@ def get_default_system() -> str:
     from config import TRADING_ENABLED, TRADE_AUTO_THRESHOLD
     if TRADING_ENABLED:
         base += (
-            f"\n\nDEFI TRADING: You can trade tokens via Velvet Capital and 1inch. "
+            f"\n\nDEFI TRADING: You can trade tokens via Velvet Capital (dapp.velvet.capital). "
             f"Rules: ALWAYS analyze_token before trading. Max 25% portfolio per trade. "
             f"Auto-execute below ${TRADE_AUTO_THRESHOLD}, confirm above. "
-            "Never go all-in. Check honeypot + liquidity first. Risk score >70 = skip."
+            "Never go all-in. Check honeypot + liquidity first. Risk score >70 = skip. "
+            "User must have a Velvet Capital portfolio to execute trades."
         )
 
     return base

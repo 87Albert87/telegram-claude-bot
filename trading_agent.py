@@ -4,7 +4,6 @@ DeFi Trading Agent — Core trading logic.
 Integrates:
 - Velvet Capital API (portfolio management, rebalance)
 - Honeypot.is API (token safety)
-- 1inch API (DEX aggregation, quote/swap)
 - CoinGecko (via web_tools, for price data)
 - web3.py (on-chain execution via wallet_manager)
 
@@ -24,7 +23,7 @@ from datetime import datetime, timezone
 
 from config import (
     TRADE_AUTO_THRESHOLD, MAX_POSITION_PCT,
-    MAX_SLIPPAGE_BPS, ONEINCH_API_KEY, ADMIN_IDS,
+    MAX_SLIPPAGE_BPS, ADMIN_IDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -35,7 +34,6 @@ VELVET_REBALANCE_TXN_URL = "https://eventsapi.velvetdao.xyz/api/v3/rebalance/txn
 VELVET_DEPOSIT_URL = "https://eventsapi.velvetdao.xyz/api/v3/portfolio/deposit"
 VELVET_WITHDRAW_URL = "https://eventsapi.velvetdao.xyz/api/v3/portfolio/withdraw"
 HONEYPOT_API_URL = "https://api.honeypot.is/v2/IsHoneypot"
-ONEINCH_API_BASE = "https://api.1inch.dev/swap/v6.0"
 
 CHAIN_IDS = {"base": 8453, "bnb": 56}
 
@@ -225,55 +223,6 @@ async def velvet_withdraw(portfolio: str, withdraw_amount: str,
 
 
 # =============================================================================
-# 1inch Integration (fallback for direct DEX swaps)
-# =============================================================================
-
-async def get_1inch_quote(chain: str, from_token: str, to_token: str,
-                           amount: str) -> dict:
-    cid = CHAIN_IDS.get(chain, 8453)
-    headers = {}
-    if ONEINCH_API_KEY:
-        headers["Authorization"] = f"Bearer {ONEINCH_API_KEY}"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{ONEINCH_API_BASE}/{cid}/quote",
-                params={"src": from_token, "dst": to_token, "amount": amount},
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        logger.error(f"1inch quote error: {e}")
-        return {"error": str(e)}
-
-
-async def get_1inch_swap(chain: str, from_token: str, to_token: str,
-                          amount: str, from_address: str,
-                          slippage: float = 1.0) -> dict:
-    cid = CHAIN_IDS.get(chain, 8453)
-    headers = {}
-    if ONEINCH_API_KEY:
-        headers["Authorization"] = f"Bearer {ONEINCH_API_KEY}"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(
-                f"{ONEINCH_API_BASE}/{cid}/swap",
-                params={
-                    "src": from_token, "dst": to_token, "amount": amount,
-                    "from": from_address, "slippage": str(slippage),
-                    "disableEstimate": "true",
-                },
-                headers=headers,
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        logger.error(f"1inch swap error: {e}")
-        return {"error": str(e)}
-
-
-# =============================================================================
 # Trade Planning & Risk Management
 # =============================================================================
 
@@ -422,27 +371,32 @@ async def execute_trade(trade_id: int, user_id: int) -> str:
     try:
         slippage = str(trade.get("slippage_bps", 100))
 
-        # Try Velvet first (if user has Velvet portfolios)
+        # Execute via Velvet Capital
         portfolios = await get_velvet_portfolios(wallet["address"], chain)
 
-        if portfolios:
-            portfolio = portfolios[0]
-            rebalance_addr = portfolio.get("rebalancing", portfolio.get("rebalanceAddress", ""))
+        if not portfolios:
+            update_trade(trade_id, status="failed", error="No Velvet Capital portfolio found")
+            return (
+                "No Velvet Capital portfolio found for this wallet. "
+                "Create a portfolio at dapp.velvet.capital first."
+            )
 
-            if rebalance_addr:
-                txn_data = await velvet_rebalance_txn(
-                    rebalance_address=rebalance_addr,
-                    sell_token=trade["token_in"],
-                    buy_token=trade["token_out"],
-                    sell_amount=trade["amount_in"],
-                    remaining_tokens=[],
-                    owner=wallet["address"],
-                    slippage=slippage,
-                )
-            else:
-                txn_data = await _get_1inch_txn(chain, trade, wallet["address"], slippage)
-        else:
-            txn_data = await _get_1inch_txn(chain, trade, wallet["address"], slippage)
+        portfolio = portfolios[0]
+        rebalance_addr = portfolio.get("rebalancing", portfolio.get("rebalanceAddress", ""))
+
+        if not rebalance_addr:
+            update_trade(trade_id, status="failed", error="No rebalance address in portfolio")
+            return "Velvet portfolio has no rebalance address. Check your portfolio setup."
+
+        txn_data = await velvet_rebalance_txn(
+            rebalance_address=rebalance_addr,
+            sell_token=trade["token_in"],
+            buy_token=trade["token_out"],
+            sell_amount=trade["amount_in"],
+            remaining_tokens=[],
+            owner=wallet["address"],
+            slippage=slippage,
+        )
 
         if "error" in txn_data:
             error = txn_data["error"]
@@ -476,18 +430,6 @@ async def execute_trade(trade_id: int, user_id: int) -> str:
         logger.error(f"Trade execution error: {e}", exc_info=True)
         update_trade(trade_id, status="failed", error=str(e))
         return f"Trade execution failed: {e}"
-
-
-async def _get_1inch_txn(chain: str, trade: dict, wallet_address: str, slippage: str) -> dict:
-    slippage_pct = int(slippage) / 100
-    return await get_1inch_swap(
-        chain=chain,
-        from_token=trade["token_in"],
-        to_token=trade["token_out"],
-        amount=trade["amount_in"],
-        from_address=wallet_address,
-        slippage=slippage_pct,
-    )
 
 
 # =============================================================================

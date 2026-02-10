@@ -29,7 +29,6 @@ WALLET_ENCRYPTION_KEY = os.getenv("WALLET_ENCRYPTION_KEY", "")
 TRADE_AUTO_THRESHOLD = float(os.getenv("TRADE_AUTO_THRESHOLD", "50"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "25"))
 MAX_SLIPPAGE_BPS = int(os.getenv("MAX_SLIPPAGE_BPS", "200"))
-ONEINCH_API_KEY = os.getenv("ONEINCH_API_KEY", "")
 
 # Prices per plan: "stars_amount,stripe_cents,crypto_usdt"
 SUB_PRICE_MONTHLY = os.getenv("SUB_PRICE_MONTHLY", "150,499,4.99")
