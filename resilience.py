@@ -421,10 +421,10 @@ async def optimize_agent_speed():
 
 async def resilience_monitor_loop():
     """
-    Continuous monitoring and self-healing loop.
-    Runs every 5 minutes to check system health.
+    Continuous monitoring and self-healing loop — ECO mode.
+    Low traffic: every 30 min. High traffic: every 5 min.
     """
-    logger.info("Resilience monitor started")
+    logger.info("Resilience monitor started (ECO mode)")
 
     while True:
         try:
@@ -448,5 +448,5 @@ async def resilience_monitor_loop():
         except Exception as e:
             logger.error(f"Resilience monitor error: {e}")
 
-        # Run every 5 minutes
-        await asyncio.sleep(300)
+        from eco_mode import get_interval
+        await asyncio.sleep(get_interval("resilience"))

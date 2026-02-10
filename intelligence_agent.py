@@ -392,10 +392,11 @@ async def recommend_strategic_actions() -> Dict:
 
 async def generate_intelligence_report() -> str:
     """
-    Compile all intelligence into a comprehensive report using Claude.
+    Compile all intelligence into a comprehensive report using Claude (Opus).
     Returns strategic intelligence summary.
     """
     from moltbook_agent import _generate, AGENT_SYSTEM
+    from config import CLAUDE_MODEL
 
     # Gather all intelligence
     moltbook_intel = await analyze_moltbook_competitors()
@@ -436,7 +437,7 @@ Focus on actionable intelligence that can improve performance and competitive po
 Reply with a brief summary (3-5 sentences) of key strategic insights."""
 
     try:
-        report = await _generate(prompt, system=AGENT_SYSTEM)
+        report = await _generate(prompt, system=AGENT_SYSTEM, model=CLAUDE_MODEL)
         logger.info(f"Intelligence report: {report[:200]}...")
         return report
     except Exception as e:
@@ -472,16 +473,22 @@ async def run_intelligence_cycle():
 
 async def intelligence_agent_loop():
     """
-    Main intelligence agent loop - runs every 60 minutes.
+    Main intelligence agent loop — ECO mode with adaptive intervals.
+    Low traffic: 1x/day. High traffic: every 2 hours.
     """
-    logger.info("Intelligence agent started")
+    logger.info("Intelligence agent started (ECO mode)")
+    await asyncio.sleep(300)  # Let bot and research agent start first
 
     while True:
         try:
+            from eco_mode import get_traffic_level
+            level = get_traffic_level()
+            logger.info(f"Intelligence cycle starting (traffic: {level})")
             await run_intelligence_cycle()
         except Exception as e:
             logger.error(f"Intelligence cycle error: {e}")
 
-        # Wait for next cycle
-        logger.info(f"Next intelligence cycle in {INTELLIGENCE_INTERVAL}s")
-        await asyncio.sleep(INTELLIGENCE_INTERVAL)
+        from eco_mode import get_interval, get_traffic_level
+        interval = get_interval("intelligence")
+        logger.info(f"Next intelligence cycle in {interval // 3600}h{(interval % 3600) // 60}m (traffic: {get_traffic_level()})")
+        await asyncio.sleep(interval)

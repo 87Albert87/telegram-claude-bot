@@ -2,19 +2,26 @@ import asyncio
 import logging
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, PreCheckoutQueryHandler
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters,
+    ContextTypes, CallbackQueryHandler, PreCheckoutQueryHandler,
+)
 from telegram.request import HTTPXRequest
-from config import TELEGRAM_BOT_TOKEN, GEMINI_API_KEY
+from config import (
+    TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, MOLTBOOK_API_KEY, ADMIN_IDS,
+    FREE_DAILY_MESSAGES, STRIPE_PROVIDER_TOKEN, CRYPTOBOT_API_TOKEN,
+    get_plan_prices, PLAN_DURATIONS,
+)
 from claude_client import ask_stream, clear_history, set_system_prompt
 from rate_limit import is_rate_limited
 from web_tools import get_crypto_price, get_multiple_crypto_prices, search_coin
-from config import MOLTBOOK_API_KEY, ADMIN_IDS, STRIPE_PROVIDER_TOKEN
 from subscription import (
-    check_message_allowed, ensure_user, get_status_text,
-    get_prices, get_pack_prices, encode_payload, decode_payload,
-    create_subscription, create_message_pack, record_payment,
-    get_active_subscription, get_remaining_messages, is_trial_active,
-    PERIOD_LABELS,
+    can_use_bot, increment_daily_usage, get_subscription_status_text,
+    create_subscription, record_payment, PLAN_LABELS,
+)
+from payments import (
+    send_stars_invoice, send_stripe_invoice, create_crypto_invoice,
+    check_crypto_payment, precheckout_callback, successful_payment_callback,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +29,30 @@ logger = logging.getLogger(__name__)
 
 STREAM_EDIT_INTERVAL = 1.0
 
+
+# ---------------------------------------------------------------------------
+# Subscription gate
+# ---------------------------------------------------------------------------
+
+async def check_subscription_gate(update: Update) -> bool:
+    """Returns True if user can proceed. Sends paywall message if not."""
+    user_id = update.effective_user.id
+    allowed, reason = can_use_bot(user_id)
+    if not allowed:
+        await update.message.reply_text(
+            f"You've used all {FREE_DAILY_MESSAGES} free messages for today.\n\n"
+            f"/subscribe - View plans and pricing\n"
+            f"Free messages reset daily at midnight UTC."
+        )
+        return False
+    if reason == "free":
+        increment_daily_usage(user_id)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Streaming reply helper
+# ---------------------------------------------------------------------------
 
 async def stream_reply(message, chat_id: int, text: str, user_id: int = 0):
     sent = await message.reply_text("...")
@@ -60,14 +91,12 @@ async def _lookup_price(coin_query: str) -> str:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Command handlers
+# ---------------------------------------------------------------------------
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from storage import get_growth_stats, get_knowledge_count
-
-    user_info = ensure_user(
-        update.effective_user.id,
-        username=update.effective_user.username or "",
-        first_name=update.effective_user.first_name or "",
-    )
 
     stats = get_growth_stats()
     knowledge = get_knowledge_count()
@@ -78,13 +107,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "infrastructure, and more. Everything I learn there makes me better here.\n\n"
     )
 
-    if user_info.get("is_new"):
-        greeting += "You have a 7-day free trial with 5 messages per day. Use /subscribe to upgrade.\n\n"
-    elif is_trial_active(update.effective_user.id):
-        remaining = get_remaining_messages(update.effective_user.id, update.effective_user.id, "private")
-        greeting += f"Free trial active. {remaining} messages remaining today. Use /subscribe to upgrade.\n\n"
-    elif update.effective_user.id not in ADMIN_IDS:
-        greeting += "Use /subscribe to get started or /status to check your plan.\n\n"
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        allowed, reason = can_use_bot(user_id)
+        if reason == "subscriber":
+            greeting += "Your subscription is active. Use /status to check details.\n\n"
+        else:
+            greeting += (
+                f"You have {FREE_DAILY_MESSAGES} free messages per day. "
+                "Use /subscribe to upgrade for unlimited access.\n\n"
+            )
 
     if stats or knowledge:
         greeting += "My growth so far:\n"
@@ -119,8 +151,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/reset - Clear conversation & system prompt\n"
         "/connect_x - Link your X/Twitter account\n"
         "/disconnect_x - Unlink your X/Twitter account\n"
-        "/finish - Exit current mode (price/prompt)\n\n"
-        "Find me on the web:\n"
+        "/finish - Exit current mode (price/prompt)\n"
+    )
+
+    from config import TRADING_ENABLED
+    if TRADING_ENABLED and user_id in ADMIN_IDS:
+        greeting += (
+            "\nDeFi Trading:\n"
+            "/connect_wallet <chain> <key> - Connect wallet\n"
+            "/disconnect_wallet <chain> - Disconnect wallet\n"
+            "/portfolio [chain] - View portfolio\n"
+            "/trades - Trade history\n"
+        )
+
+    greeting += (
+        "\nFind me on the web:\n"
         "X/Twitter: https://x.com/Claudence87\n"
         "MoltBook: https://moltbook.com/u/ClawdVC"
     )
@@ -150,7 +195,6 @@ async def prompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only works in groups/channels
     if update.effective_chat.type == "private":
         await update.message.reply_text("No need for /q in private chat — just send your message directly.")
         return
@@ -163,11 +207,7 @@ async def question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     try:
@@ -183,15 +223,10 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     if not query:
-        # Enter price mode
         context.user_data["mode"] = "price"
         await update.message.reply_text(
             "Price mode. Send token names one by one and I'll reply with prices.\n"
@@ -246,7 +281,6 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Generate an image using nano-banana-pro (Gemini 3 Pro Image)."""
     import subprocess
-    import os
     from datetime import datetime
 
     prompt = " ".join(context.args) if context.args else ""
@@ -254,11 +288,7 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     if not prompt:
@@ -271,17 +301,14 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check if GEMINI_API_KEY is configured
     if not os.environ.get("GEMINI_API_KEY"):
-        await update.message.reply_text("❌ Image generation not configured. Please set GEMINI_API_KEY.")
+        await update.message.reply_text("Image generation not configured. Please set GEMINI_API_KEY.")
         return
 
-    # Send generating message
-    status_msg = await update.message.reply_text("🎨 Generating your image...")
+    status_msg = await update.message.reply_text("Generating your image...")
 
     try:
-        # Determine resolution
-        resolution = "1K"  # default
+        resolution = "1K"
         if any(word in prompt.lower() for word in ["4k", "high-res", "hi-res", "ultra"]):
             resolution = "4K"
             prompt = prompt.replace("4K", "").replace("4k", "").replace("high-res", "").replace("hi-res", "").replace("ultra", "").strip()
@@ -289,62 +316,55 @@ async def image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             resolution = "2K"
             prompt = prompt.replace("2K", "").replace("2k", "").replace("medium", "").replace("normal", "").strip()
 
-        # Generate filename
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        # Create short descriptive name from prompt
         desc_words = prompt.lower().split()[:3]
         desc_name = "-".join(word for word in desc_words if word.isalnum())
         if not desc_name:
             desc_name = "image"
         filename = f"/tmp/{timestamp}-{desc_name}.png"
 
-        # Run image generation script
         script_path = os.path.join(os.path.dirname(__file__), "generate_image.py")
 
         result = subprocess.run(
             ["python3", script_path, "--prompt", prompt, "--filename", filename, "--resolution", resolution],
             capture_output=True,
             text=True,
-            timeout=120,  # 2 minute timeout
+            timeout=120,
             env=os.environ
         )
 
         if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
             logger.error(f"Image generation failed: {error_msg}")
-            await status_msg.edit_text(f"❌ Image generation failed:\n{error_msg[:500]}")
+            await status_msg.edit_text(f"Image generation failed:\n{error_msg[:500]}")
             return
 
-        # Check if file was created
         if not os.path.exists(filename):
-            await status_msg.edit_text(f"❌ Image file not found: {filename}")
+            await status_msg.edit_text(f"Image file not found: {filename}")
             return
 
-        # Send the image
-        await status_msg.edit_text(f"✅ Image generated! Sending...")
+        await status_msg.edit_text("Image generated! Sending...")
 
         with open(filename, 'rb') as photo:
             await update.message.reply_photo(
                 photo=photo,
-                caption=f"🎨 Generated: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\nResolution: {resolution}"
+                caption=f"Generated: {prompt[:100]}{'...' if len(prompt) > 100 else ''}\nResolution: {resolution}"
             )
 
-        # Delete the status message
         await status_msg.delete()
 
-        # Clean up the file
         try:
             os.remove(filename)
-        except:
+        except Exception:
             pass
 
         logger.info(f"Image generated successfully for user {update.effective_user.id}: {prompt[:50]}")
 
     except subprocess.TimeoutExpired:
-        await status_msg.edit_text("❌ Image generation timed out. Please try a simpler prompt.")
+        await status_msg.edit_text("Image generation timed out. Please try a simpler prompt.")
     except Exception as e:
         logger.error(f"Image generation error: {e}", exc_info=True)
-        await status_msg.edit_text(f"❌ Error: {str(e)[:500]}")
+        await status_msg.edit_text(f"Error: {str(e)[:500]}")
 
 
 async def growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -379,11 +399,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     if not topic:
@@ -407,7 +423,6 @@ async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic:
     try:
         client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
-        # Fetch live prices from CoinGecko for crypto/market topics
         live_prices = ""
         topic_lower = topic.lower()
         if any(w in topic_lower for w in ("crypto", "bitcoin", "btc", "ethereum", "eth", "solana",
@@ -427,10 +442,9 @@ async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic:
                 f"Do NOT use prices from news articles, they may be outdated.\n"
             )
 
-        # Web search with high token limit so Claude actually writes the full report
         web_response = await client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=3072,
             tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
             messages=[{"role": "user", "content":
                 f"You are a top-tier news analyst. Search the web for: {topic}\n\n"
@@ -473,16 +487,13 @@ async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic:
                 f"{price_instruction}"}],
         )
 
-        # Extract ALL text blocks from response
         texts = []
         for block in web_response.content:
             if hasattr(block, "text") and block.text.strip():
                 texts.append(block.text)
         result = "\n".join(texts) if texts else "No results found. Please try a different topic."
 
-        # Telegram message limit is 4096 chars
         if len(result) > 4096:
-            # Send in chunks
             for i in range(0, len(result), 4096):
                 chunk = result[i:i + 4096]
                 if i == 0:
@@ -501,9 +512,12 @@ async def _news_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, topic:
             pass
 
 
+# ---------------------------------------------------------------------------
+# X/Twitter commands
+# ---------------------------------------------------------------------------
+
 async def connect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from storage import save_x_cookies
-    # Delete the message immediately to hide cookies
     try:
         await update.message.delete()
     except Exception:
@@ -530,15 +544,13 @@ async def disconnect_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("X/Twitter account disconnected.")
 
 
-
 async def check_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from config import ADMIN_IDS
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Admin only.")
         return
-    from web_tools import validate_x_cookies, are_x_cookies_valid
+    from web_tools import validate_x_cookies
     from storage import get_x_cookies
-    user_id = 0  # bot's own account
+    user_id = 0
     cookies = get_x_cookies(user_id)
     if not cookies:
         await update.message.reply_text("No X cookies stored for the bot (user_id=0). Use /connect_x to set up.")
@@ -553,8 +565,6 @@ async def check_x(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def connect_x_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command to set X cookies for the bot's autonomous account (user_id=0)."""
-    from config import ADMIN_IDS
-    from storage import save_x_cookies
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Admin only.")
         return
@@ -569,6 +579,7 @@ async def connect_x_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="Usage: /connect_x_bot <auth_token> <ct0>\n\nSets X cookies for the bot's autonomous account (user_id=0).",
         )
         return
+    from storage import save_x_cookies
     save_x_cookies(0, args[0], args[1])
     from web_tools import _x_cookies_valid
     _x_cookies_valid[0] = True
@@ -577,6 +588,137 @@ async def connect_x_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text="Bot's X account (user_id=0) connected. Your message has been deleted for security.",
     )
 
+
+# ---------------------------------------------------------------------------
+# DeFi Trading commands (admin only)
+# ---------------------------------------------------------------------------
+
+async def connect_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    from config import TRADING_ENABLED
+    if not TRADING_ENABLED:
+        await update.message.reply_text("Trading is not enabled. Set TRADING_ENABLED=true in .env")
+        return
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    args = context.args if context.args else []
+    if len(args) < 2:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=(
+                "Usage: /connect_wallet <chain> <private_key>\n\n"
+                "Chains: base, bnb\n"
+                "Example: /connect_wallet base 0xYOUR_PRIVATE_KEY\n\n"
+                "Your message will be deleted immediately for security. "
+                "The key is encrypted with Fernet before storage."
+            ),
+        )
+        return
+    chain = args[0].lower()
+    private_key = args[1]
+    if chain not in ("base", "bnb"):
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="Unsupported chain. Use 'base' or 'bnb'.",
+        )
+        return
+    from wallet_manager import validate_private_key
+    valid, address = validate_private_key(private_key)
+    if not valid:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"Invalid private key: {address}",
+        )
+        return
+    from storage import save_wallet
+    save_wallet(update.effective_user.id, chain, private_key, address)
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=(
+            f"Wallet connected for {chain.upper()}!\n"
+            f"Address: {address}\n"
+            f"Your message with the private key has been deleted.\n"
+            f"Use /portfolio to check balances."
+        ),
+    )
+
+
+async def disconnect_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    args = context.args if context.args else []
+    chain = args[0].lower() if args else "base"
+    from storage import delete_wallet
+    delete_wallet(update.effective_user.id, chain)
+    await update.message.reply_text(f"Wallet disconnected for {chain}.")
+
+
+async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    from config import TRADING_ENABLED
+    if not TRADING_ENABLED:
+        await update.message.reply_text("Trading is not enabled.")
+        return
+    args = context.args if context.args else []
+    chain = args[0].lower() if args else "base"
+    sent = await update.message.reply_text("Fetching portfolio...")
+    try:
+        from trading_agent import get_portfolio_summary
+        result = await get_portfolio_summary(update.effective_user.id, chain)
+        await sent.edit_text(result)
+    except Exception as e:
+        logger.error(f"Portfolio error: {e}", exc_info=True)
+        await sent.edit_text(f"Error: {e}")
+
+
+async def trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
+        return
+    sent = await update.message.reply_text("Fetching trades...")
+    try:
+        from trading_agent import get_trade_history
+        result = await get_trade_history(update.effective_user.id)
+        await sent.edit_text(result)
+    except Exception as e:
+        logger.error(f"Trades error: {e}", exc_info=True)
+        await sent.edit_text(f"Error: {e}")
+
+
+async def trade_confirmation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id not in ADMIN_IDS:
+        return
+    data = query.data
+    parts = data.split("_")
+    if len(parts) != 3:
+        return
+    _, action, trade_id_str = parts
+    trade_id = int(trade_id_str)
+    if action == "approve":
+        from storage import update_trade
+        update_trade(trade_id, status="confirmed")
+        await query.edit_message_text(f"Trade #{trade_id} approved. Executing...")
+        from trading_agent import execute_trade
+        result = await execute_trade(trade_id, query.from_user.id)
+        await context.bot.send_message(chat_id=query.message.chat_id, text=result)
+    elif action == "reject":
+        from storage import update_trade
+        update_trade(trade_id, status="rejected")
+        await query.edit_message_text(f"Trade #{trade_id} rejected.")
+
+
+# ---------------------------------------------------------------------------
+# Media handlers
+# ---------------------------------------------------------------------------
 
 async def transcribe_voice(file_path: str) -> str:
     """Transcribe voice message using Gemini."""
@@ -587,11 +729,9 @@ async def transcribe_voice(file_path: str) -> str:
         from google import genai
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        # Upload the audio file
         with open(file_path, "rb") as f:
             audio_data = f.read()
 
-        # Use Gemini to transcribe
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=[
@@ -621,20 +761,16 @@ async def analyze_video(file_path: str, prompt: str = None) -> str:
 
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        # Read video file
         with open(file_path, "rb") as f:
             video_data = f.read()
 
-        # Check file size (Gemini has limits)
         size_mb = len(video_data) / (1024 * 1024)
         if size_mb > 20:
             return f"[Video too large: {size_mb:.1f}MB. Maximum is 20MB]"
 
-        # Default prompt
         if not prompt:
             prompt = "Analyze this video in detail. Describe what's happening, any text visible, people, objects, actions, and the overall context. If there's audio/speech, transcribe it."
 
-        # Use Gemini to analyze
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=[
@@ -655,37 +791,28 @@ async def analyze_video(file_path: str, prompt: str = None) -> str:
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages by transcribing and processing with Claude."""
-    # Only respond in private chats
     if update.effective_chat.type != "private":
         return
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     try:
-        # Download voice file
         voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
 
-        # Save to temp file
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
             tmp_path = tmp.name
 
         await file.download_to_drive(tmp_path)
 
-        # Transcribe
-        sent = await update.message.reply_text("🎤 Transcribing...")
+        sent = await update.message.reply_text("Transcribing...")
         transcription = await transcribe_voice(tmp_path)
 
-        # Clean up temp file
         try:
             os.unlink(tmp_path)
         except Exception:
@@ -695,15 +822,13 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await sent.edit_text(transcription)
             return
 
-        # Show transcription and process with Claude
-        await sent.edit_text(f"🎤 \"{transcription}\"\n\nThinking...")
+        await sent.edit_text(f"\"{transcription}\"\n\nThinking...")
 
-        # Process with Claude
         last_text = ""
         async for current_text in ask_stream(update.effective_chat.id, transcription, user_id=update.effective_user.id):
             if current_text != last_text:
                 try:
-                    display = f"🎤 \"{transcription}\"\n\n{current_text}"
+                    display = f"\"{transcription}\"\n\n{current_text}"
                     if len(display) <= 4096:
                         await sent.edit_text(display)
                     else:
@@ -725,41 +850,31 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     try:
-        # Get video (could be VIDEO or VIDEO_NOTE)
         video = update.message.video or update.message.video_note
         if not video:
             return
 
-        # Check file size
         if video.file_size and video.file_size > 20 * 1024 * 1024:
             await update.message.reply_text("Video too large. Maximum size is 20MB.")
             return
 
         file = await context.bot.get_file(video.file_id)
 
-        # Download video
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp_path = tmp.name
         await file.download_to_drive(tmp_path)
 
-        # Get caption or default prompt
         caption = update.message.caption or None
 
-        sent = await update.message.reply_text("🎬 Analyzing video...")
+        sent = await update.message.reply_text("Analyzing video...")
 
-        # Analyze with Gemini
         analysis = await analyze_video(tmp_path, caption)
 
-        # Clean up
         try:
             os.unlink(tmp_path)
         except Exception:
@@ -769,7 +884,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await sent.edit_text(analysis)
             return
 
-        # Send analysis to Claude for a conversational response
         context_prompt = f"The user sent a video. Here's the analysis:\n\n{analysis}"
         if caption:
             context_prompt += f"\n\nUser's question about the video: {caption}"
@@ -797,41 +911,31 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     try:
-        # Get the largest photo
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
 
-        # Download photo
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp_path = tmp.name
         await file.download_to_drive(tmp_path)
 
-        # Read and encode
         import base64
         with open(tmp_path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode()
 
-        # Clean up
         try:
             os.unlink(tmp_path)
         except Exception:
             pass
 
-        # Get caption or default prompt
         caption = update.message.caption or "What's in this image? Describe and analyze it."
 
-        sent = await update.message.reply_text("🖼️ Analyzing image...")
+        sent = await update.message.reply_text("Analyzing image...")
 
-        # Send to Claude with image
         attachments = [{"type": "image", "media_type": "image/jpeg", "data": image_data}]
 
         last_text = ""
@@ -856,30 +960,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     doc = update.message.document
     file_name = doc.file_name or "document"
     mime_type = doc.mime_type or ""
 
-    # Check supported types
-    supported_types = {
-        "application/pdf": "pdf",
-        "text/plain": "txt",
-        "text/markdown": "txt",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-        "application/msword": "doc",
-    }
-
     file_ext = file_name.split(".")[-1].lower() if "." in file_name else ""
 
     try:
-        # Download file
         file = await context.bot.get_file(doc.file_id)
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False) as tmp:
@@ -889,24 +979,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         import base64
         caption = update.message.caption or f"Analyze this {file_ext.upper()} file. Summarize its contents."
 
-        sent = await update.message.reply_text(f"📄 Reading {file_name}...")
+        sent = await update.message.reply_text(f"Reading {file_name}...")
 
         attachments = []
         text_content = None
 
-        # Handle PDFs - Claude supports natively
         if mime_type == "application/pdf" or file_ext == "pdf":
             with open(tmp_path, "rb") as f:
                 pdf_data = base64.b64encode(f.read()).decode()
             attachments = [{"type": "document", "media_type": "application/pdf", "data": pdf_data}]
 
-        # Handle text files
         elif file_ext in ("txt", "md", "py", "js", "json", "csv", "xml", "html", "css", "yaml", "yml", "sh", "log"):
             with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
-                text_content = f.read()[:50000]  # Limit to 50k chars
+                text_content = f.read()[:50000]
             caption = f"Here's the content of {file_name}:\n\n```\n{text_content}\n```\n\n{caption}"
 
-        # Handle DOCX
         elif file_ext == "docx":
             try:
                 from docx import Document
@@ -914,23 +1001,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_content = "\n".join([para.text for para in doc_file.paragraphs])[:50000]
                 caption = f"Here's the content of {file_name}:\n\n{text_content}\n\n{caption}"
             except ImportError:
-                await sent.edit_text("❌ DOCX support not installed. Please use PDF or TXT files.")
+                await sent.edit_text("DOCX support not installed. Please use PDF or TXT files.")
                 return
             except Exception as e:
-                await sent.edit_text(f"❌ Could not read DOCX: {e}")
+                await sent.edit_text(f"Could not read DOCX: {e}")
                 return
 
         else:
-            await sent.edit_text(f"❌ Unsupported file type: {file_ext}\n\nSupported: PDF, TXT, MD, DOCX, code files")
+            await sent.edit_text(f"Unsupported file type: {file_ext}\n\nSupported: PDF, TXT, MD, DOCX, code files")
             return
 
-        # Clean up temp file
         try:
             os.unlink(tmp_path)
         except Exception:
             pass
 
-        # Send to Claude
         last_text = ""
         async for current_text in ask_stream(update.effective_chat.id, caption, user_id=update.effective_user.id, attachments=attachments if attachments else None):
             if current_text != last_text:
@@ -945,10 +1030,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong reading the document.")
 
 
+# ---------------------------------------------------------------------------
+# Main message handler
+# ---------------------------------------------------------------------------
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
 
-    # Price mode: each message is a token name
     if mode == "price":
         query = update.message.text.strip()
         if not query:
@@ -956,11 +1044,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_rate_limited(update.effective_user.id):
             await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
             return
-        allowed, msg = check_message_allowed(
-            update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-        if not allowed:
-            if msg:
-                await update.message.reply_text(msg)
+        if not await check_subscription_gate(update):
             return
         try:
             result = await _lookup_price(query)
@@ -970,13 +1054,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Something went wrong. Please try again.")
         return
 
-    # Prompt mode: each message is appended to prompt buffer
     if mode == "prompt":
         context.user_data.setdefault("prompt_buffer", []).append(update.message.text)
         await update.message.reply_text("Added. Send more or /finish to save.")
         return
 
-    # News mode: each message is a topic to look up
     if mode == "news":
         topic = update.message.text.strip()
         if not topic:
@@ -984,21 +1066,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_rate_limited(update.effective_user.id):
             await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
             return
-        allowed, msg = check_message_allowed(
-            update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-        if not allowed:
-            if msg:
-                await update.message.reply_text(msg)
+        if not await check_subscription_gate(update):
             return
         await _news_reply(update, context, topic)
         return
 
-    # Groups/channels: check for group subscription
+    # Groups/channels
     if update.effective_chat.type != "private":
-        allowed, msg = check_message_allowed(
-            update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-        if not allowed:
-            return  # Stay silent in groups without subscription
+        if not await check_subscription_gate(update):
+            return
         try:
             await stream_reply(update.message, update.effective_chat.id,
                                update.message.text, user_id=update.effective_user.id)
@@ -1006,15 +1082,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error: {e}", exc_info=True)
         return
 
-    # Private chat: respond to everything
+    # Private chat
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
         return
-    allowed, msg = check_message_allowed(
-        update.effective_user.id, update.effective_chat.id, update.effective_chat.type)
-    if not allowed:
-        if msg:
-            await update.message.reply_text(msg)
+    if not await check_subscription_gate(update):
         return
 
     try:
@@ -1024,232 +1096,162 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong. Please try again.")
 
 
-async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show subscription options."""
-    chat_type = update.effective_chat.type
-    is_private = chat_type == "private"
-    plan = "personal" if is_private else "group"
+# ---------------------------------------------------------------------------
+# Subscription commands
+# ---------------------------------------------------------------------------
 
+async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show subscription plan options."""
     rows = []
-    for period in ("1w", "1m", "3m", "6m"):
-        p = get_prices(plan, period)
-        label = PERIOD_LABELS[period]
+    for plan_key in ("monthly", "3months", "6months", "yearly", "lifetime"):
+        label = PLAN_LABELS[plan_key]
+        prices = get_plan_prices(plan_key)
         rows.append([
             InlineKeyboardButton(
-                f"{label} — {p['stars']} Stars",
-                callback_data=f"sub:{plan}:{period}:stars",
-            ),
-            InlineKeyboardButton(
-                f"{label} — ${p['usd_cents'] / 100:.2f}",
-                callback_data=f"sub:{plan}:{period}:stripe",
-            ),
+                f"{label} — {prices['stars']} Stars / ${int(prices['stripe_cents'])/100:.2f}",
+                callback_data=f"plan_{plan_key}",
+            )
         ])
 
-    if is_private:
-        from config import PAID_DAILY_LIMIT
-        text = (
-            "Choose your subscription plan:\n\n"
-            f"Personal Plan — {PAID_DAILY_LIMIT} messages/day in private chat\n"
-        )
-    else:
-        text = (
-            "Choose subscription for this group:\n\n"
-            "Group Plan — Unlimited messages\n"
-        )
-
+    text = (
+        "Choose your subscription plan:\n\n"
+        f"Free tier: {FREE_DAILY_MESSAGES} messages/day\n"
+        "Paid: Unlimited messages\n"
+    )
     await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
 
-async def subscribe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button presses from /subscribe menu."""
+async def plan_selected_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle plan selection — show payment method options."""
     query = update.callback_query
     await query.answer()
 
-    parts = query.data.split(":")
-    if len(parts) != 4:
+    plan = query.data.replace("plan_", "")
+    if plan not in PLAN_LABELS:
         return
-    _, plan, period, method = parts
 
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    prices_info = get_prices(plan, period)
-    payload = encode_payload("sub", plan, period, chat_id, user_id)
+    prices = get_plan_prices(plan)
+    label = PLAN_LABELS[plan]
 
-    title = f"ClawdVC {plan.title()} Plan ({PERIOD_LABELS.get(period, period)})"
+    buttons = [
+        [InlineKeyboardButton(
+            f"Telegram Stars ({prices['stars']} Stars)",
+            callback_data=f"pay_stars_{plan}",
+        )],
+    ]
+    if STRIPE_PROVIDER_TOKEN:
+        buttons.append([InlineKeyboardButton(
+            f"Card (${int(prices['stripe_cents'])/100:.2f})",
+            callback_data=f"pay_stripe_{plan}",
+        )])
+    if CRYPTOBOT_API_TOKEN:
+        buttons.append([InlineKeyboardButton(
+            f"Crypto ({prices['crypto_usdt']} USDT)",
+            callback_data=f"pay_crypto_{plan}",
+        )])
+
+    await query.edit_message_text(
+        f"Plan: {label}\n\nChoose payment method:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def payment_method_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle payment method selection — send invoice or crypto URL."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split("_", 2)  # pay_{method}_{plan}
+    if len(parts) != 3:
+        return
+    _, method, plan = parts
 
     if method == "stars":
-        await context.bot.send_invoice(
-            chat_id=user_id,
-            title=title,
-            description=prices_info["label"],
-            payload=payload,
-            currency="XTR",
-            prices=[LabeledPrice("Subscription", prices_info["stars"])],
-        )
+        await send_stars_invoice(update, context, plan)
     elif method == "stripe":
-        if not STRIPE_PROVIDER_TOKEN:
-            await query.edit_message_text("Card payments are not yet configured. Please use Stars.")
-            return
-        await context.bot.send_invoice(
-            chat_id=user_id,
-            title=title,
-            description=prices_info["label"],
-            payload=payload,
-            provider_token=STRIPE_PROVIDER_TOKEN,
-            currency="USD",
-            prices=[LabeledPrice("Subscription", prices_info["usd_cents"])],
-            need_email=True,
-        )
+        await send_stripe_invoice(update, context, plan)
+    elif method == "crypto":
+        user_id = update.effective_user.id
+        pay_url = await create_crypto_invoice(user_id, plan)
+        if pay_url:
+            await query.edit_message_text(
+                f"Pay with crypto:\n{pay_url}\n\n"
+                "After payment, use /check_payment to activate your subscription."
+            )
+        else:
+            await query.edit_message_text(
+                "Crypto payments are not available right now. Please use Stars or Card."
+            )
 
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show subscription status and usage."""
-    text = get_status_text(
-        update.effective_user.id,
-        update.effective_chat.id,
-        update.effective_chat.type,
-    )
+    text = get_subscription_status_text(update.effective_user.id)
     await update.message.reply_text(text)
 
 
-async def buy_messages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Buy a 50-message pack (private chat only, requires active subscription)."""
-    if update.effective_chat.type != "private":
-        await update.message.reply_text("Message packs are for private chat only.")
+async def grant_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: grant a subscription. Usage: /grant <user_id> <plan>"""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Admin only.")
         return
 
-    user_id = update.effective_user.id
-    sub = get_active_subscription(user_id, user_id)
-    if not sub:
-        await update.message.reply_text(
-            "You need an active subscription to buy message packs.\n"
-            "Use /subscribe to get started."
-        )
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /grant <user_id> <plan>\nPlans: monthly, 3months, 6months, yearly, lifetime")
         return
 
-    pack_prices = get_pack_prices()
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                f"{pack_prices['label']} — {pack_prices['stars']} Stars",
-                callback_data="pack:stars",
-            ),
-            InlineKeyboardButton(
-                f"{pack_prices['label']} — ${pack_prices['usd_cents'] / 100:.2f}",
-                callback_data="pack:stripe",
-            ),
-        ]
-    ]
-    remaining = get_remaining_messages(user_id, user_id, "private")
-    await update.message.reply_text(
-        f"You have {remaining} messages remaining today.\n\n"
-        f"Buy a pack of extra messages:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-async def pack_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline button presses from /buy_messages menu."""
-    query = update.callback_query
-    await query.answer()
-
-    parts = query.data.split(":")
-    if len(parts) != 2:
-        return
-    _, method = parts
-
-    user_id = update.effective_user.id
-    pack_prices = get_pack_prices()
-    payload = encode_payload("pack", user_id=user_id)
-
-    if method == "stars":
-        await context.bot.send_invoice(
-            chat_id=user_id,
-            title="ClawdVC Message Pack",
-            description=pack_prices["label"],
-            payload=payload,
-            currency="XTR",
-            prices=[LabeledPrice("Message Pack", pack_prices["stars"])],
-        )
-    elif method == "stripe":
-        if not STRIPE_PROVIDER_TOKEN:
-            await query.edit_message_text("Card payments are not yet configured. Please use Stars.")
-            return
-        await context.bot.send_invoice(
-            chat_id=user_id,
-            title="ClawdVC Message Pack",
-            description=pack_prices["label"],
-            payload=payload,
-            provider_token=STRIPE_PROVIDER_TOKEN,
-            currency="USD",
-            prices=[LabeledPrice("Message Pack", pack_prices["usd_cents"])],
-            need_email=True,
-        )
-
-
-async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Validate payment before charging. Must answer within 10 seconds."""
-    query = update.pre_checkout_query
     try:
-        data = decode_payload(query.invoice_payload)
-        if data["action"] not in ("sub", "pack"):
-            await query.answer(ok=False, error_message="Invalid payment type.")
-            return
-        await query.answer(ok=True)
-    except Exception as e:
-        logger.error(f"Pre-checkout error: {e}")
-        await query.answer(ok=False, error_message="Payment validation failed.")
+        target_user_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid user_id.")
+        return
 
+    plan = args[1]
+    if plan not in PLAN_DURATIONS:
+        await update.message.reply_text(f"Unknown plan: {plan}\nValid: {', '.join(PLAN_DURATIONS.keys())}")
+        return
 
-async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle completed payment — create subscription or message pack."""
-    payment = update.message.successful_payment
-    data = decode_payload(payment.invoice_payload)
-    user_id = update.effective_user.id
-
+    sub = create_subscription(target_user_id, plan, "admin_grant")
     record_payment(
-        user_id=user_id,
-        chat_id=data.get("chat_id", user_id),
-        payment_type=data["action"],
-        amount=payment.total_amount,
-        currency=payment.currency,
-        payload=payment.invoice_payload,
-        tg_charge_id=payment.telegram_payment_charge_id,
-        provider_charge_id=payment.provider_payment_charge_id or "",
+        user_id=target_user_id,
+        amount="0",
+        currency="GRANT",
+        payment_method="admin_grant",
+        plan=plan,
+        payment_id=f"grant_by_{update.effective_user.id}",
+        status="completed",
     )
 
-    if data["action"] == "sub":
-        chat_type = "private" if data["plan"] == "personal" else "group"
-        sub = create_subscription(
-            user_id=user_id,
-            chat_id=data.get("chat_id", user_id),
-            chat_type=chat_type,
-            plan=data["plan"],
-            period=data["period"],
-            payment_method="stars" if payment.currency == "XTR" else "stripe",
-            tg_charge_id=payment.telegram_payment_charge_id,
-            provider_charge_id=payment.provider_payment_charge_id or "",
-        )
+    label = PLAN_LABELS.get(plan, plan)
+    expires = sub["expires_at"][:10] if sub["expires_at"] else "Never"
+    await update.message.reply_text(
+        f"Granted {label} subscription to user {target_user_id}.\nExpires: {expires}"
+    )
+
+
+async def check_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check pending crypto payment status."""
+    user_id = update.effective_user.id
+    plan = await check_crypto_payment(user_id)
+    if plan:
+        label = PLAN_LABELS.get(plan, plan)
         await update.message.reply_text(
-            f"Payment successful! Your {data['plan']} subscription is now active "
-            f"until {sub['expires_at'][:10]}.\n\n"
-            f"Use /status to check your plan details."
+            f"Payment confirmed! Your {label} subscription is now active.\n"
+            "Use /status to check details."
+        )
+    else:
+        await update.message.reply_text(
+            "No completed crypto payment found.\n"
+            "If you just paid, please wait a moment and try again."
         )
 
-    elif data["action"] == "pack":
-        create_message_pack(
-            user_id=user_id,
-            tg_charge_id=payment.telegram_payment_charge_id,
-            provider_charge_id=payment.provider_payment_charge_id or "",
-        )
-        await update.message.reply_text(
-            "Payment successful! You now have extra messages.\n"
-            "Use /status to check your balance."
-        )
 
+# ---------------------------------------------------------------------------
+# App lifecycle
+# ---------------------------------------------------------------------------
 
 async def post_init(application):
-    # Schedule code-modification stability check
     from evolution import _clear_markers_after_delay, _MODIFIED_MARKER
     if os.path.exists(_MODIFIED_MARKER):
         asyncio.create_task(_clear_markers_after_delay(120))
@@ -1261,25 +1263,38 @@ async def post_init(application):
     else:
         logger.info("MoltBook agent disabled (no API key)")
 
-    # Start research agent (autonomous knowledge gathering)
     from research_agent import research_agent_loop
     asyncio.create_task(research_agent_loop())
-    logger.info("Research agent enabled")
+    logger.info("Research agent enabled (ECO mode)")
 
-    # Start intelligence agent (competitive analysis & strategic intelligence)
     from intelligence_agent import intelligence_agent_loop
     asyncio.create_task(intelligence_agent_loop())
-    logger.info("Intelligence agent enabled")
+    logger.info("Intelligence agent enabled (ECO mode)")
 
-    # Start resilience monitor (error recovery & self-healing)
     from resilience import resilience_monitor_loop
     asyncio.create_task(resilience_monitor_loop())
-    logger.info("Resilience system enabled - UNSTOPPABLE MODE")
+    logger.info("Resilience monitor enabled (ECO mode)")
 
 
 def main():
     request = HTTPXRequest(connect_timeout=20.0, read_timeout=60.0, write_timeout=20.0, pool_timeout=20.0)
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(request).post_init(post_init).build()
+
+    # Payment handlers (must be before generic message handlers)
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+
+    # Subscription commands
+    app.add_handler(CommandHandler("subscribe", subscribe_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("grant", grant_cmd))
+    app.add_handler(CommandHandler("check_payment", check_payment_cmd))
+
+    # Inline keyboard callbacks
+    app.add_handler(CallbackQueryHandler(plan_selected_callback, pattern="^plan_"))
+    app.add_handler(CallbackQueryHandler(payment_method_callback, pattern="^pay_"))
+
+    # Standard commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("prompt", prompt_cmd))
@@ -1293,18 +1308,21 @@ def main():
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
     app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
     app.add_handler(CommandHandler("check_x", check_x))
-    app.add_handler(CommandHandler("subscribe", subscribe_cmd))
-    app.add_handler(CommandHandler("status", status_cmd))
-    app.add_handler(CommandHandler("buy_messages", buy_messages_cmd))
-    app.add_handler(CallbackQueryHandler(subscribe_callback, pattern=r"^sub:"))
-    app.add_handler(CallbackQueryHandler(pack_callback, pattern=r"^pack:"))
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+
+    # Trading commands (admin only)
+    app.add_handler(CommandHandler("connect_wallet", connect_wallet))
+    app.add_handler(CommandHandler("disconnect_wallet", disconnect_wallet))
+    app.add_handler(CommandHandler("portfolio", portfolio_cmd))
+    app.add_handler(CommandHandler("trades", trades_cmd))
+    app.add_handler(CallbackQueryHandler(trade_confirmation_callback, pattern="^trade_"))
+
+    # Content handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, handle_video))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+
     app.run_polling()
 
 

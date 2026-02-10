@@ -3,11 +3,14 @@ import json
 import logging
 import random
 from datetime import datetime, timezone
-async def _generate(prompt: str, system: str = "") -> str:
+MOLTBOOK_MODEL = "claude-sonnet-4-5-20250929"
+
+
+async def _generate(prompt: str, system: str = "", model: str = None) -> str:
     from anthropic import AsyncAnthropic
     from config import ANTHROPIC_API_KEY
     client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    kwargs = {"model": "claude-sonnet-4-20250514", "max_tokens": 2048, "messages": [{"role": "user", "content": prompt}]}
+    kwargs = {"model": model or MOLTBOOK_MODEL, "max_tokens": 2048, "messages": [{"role": "user", "content": prompt}]}
     if system:
         kwargs["system"] = system
     response = await client.messages.create(**kwargs)
@@ -600,7 +603,7 @@ async def post_to_x():
                 from config import ANTHROPIC_API_KEY
                 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
                 resp = await client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model="claude-sonnet-4-5-20250929",
                     max_tokens=512,
                     tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
                     messages=[{"role": "user", "content":

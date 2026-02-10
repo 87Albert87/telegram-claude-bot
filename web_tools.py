@@ -204,6 +204,135 @@ CUSTOM_TOOLS = [
     }
 ]
 
+TRADING_TOOLS = [
+    {
+        "name": "analyze_token",
+        "description": (
+            "Analyze a token for safety before trading. Checks honeypot status, "
+            "buy/sell tax, liquidity, contract verification, and holder count. "
+            "Returns a risk score 0-100. ALWAYS use before ANY trade."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "token_address": {
+                    "type": "string",
+                    "description": "Token contract address (0x...)"
+                },
+                "chain": {
+                    "type": "string",
+                    "description": "Chain: 'base' or 'bnb' (default: 'base')",
+                    "default": "base"
+                }
+            },
+            "required": ["token_address"]
+        }
+    },
+    {
+        "name": "get_portfolio",
+        "description": (
+            "Get the user's DeFi portfolio including wallet balances and Velvet Capital vaults. "
+            "Shows native token balance, ERC20 tokens, and Velvet portfolio positions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chain": {
+                    "type": "string",
+                    "description": "Chain: 'base' or 'bnb' (default: 'base')",
+                    "default": "base"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "plan_trade",
+        "description": (
+            "Plan a DeFi trade with safety checks, position sizing, and slippage calculation. "
+            "Does NOT execute — returns a trade plan for review. Always call analyze_token first. "
+            "Caps position to max 25% of portfolio with risk-adjusted sizing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chain": {
+                    "type": "string",
+                    "description": "Chain: 'base' or 'bnb'",
+                    "default": "base"
+                },
+                "token_in": {
+                    "type": "string",
+                    "description": "Token to sell (contract address)"
+                },
+                "token_out": {
+                    "type": "string",
+                    "description": "Token to buy (contract address)"
+                },
+                "amount_usd": {
+                    "type": "string",
+                    "description": "Amount to trade in USD"
+                }
+            },
+            "required": ["token_in", "token_out", "amount_usd"]
+        }
+    },
+    {
+        "name": "execute_trade",
+        "description": (
+            "Execute a previously planned and confirmed trade. Requires trade_id from plan_trade. "
+            "For trades above the auto-threshold ($50), the user must explicitly confirm first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trade_id": {
+                    "type": "integer",
+                    "description": "Trade ID to execute"
+                }
+            },
+            "required": ["trade_id"]
+        }
+    },
+    {
+        "name": "set_trading_goal",
+        "description": (
+            "Set a profit target like 'earn $1000'. The agent will analyze the portfolio, "
+            "create a strategy with risk allocation, and propose trades to reach the goal."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "target_amount": {
+                    "type": "number",
+                    "description": "Target profit in USD (e.g. 1000)"
+                },
+                "chain": {
+                    "type": "string",
+                    "description": "Chain: 'base' or 'bnb' (default: 'base')",
+                    "default": "base"
+                }
+            },
+            "required": ["target_amount"]
+        }
+    },
+    {
+        "name": "get_trade_history",
+        "description": "View past trades with status, amounts, and transaction hashes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Number of trades to show (default: 10)",
+                    "default": 10
+                }
+            },
+            "required": []
+        }
+    },
+]
+
 
 async def get_crypto_price(coin_id: str, currency: str = "usd") -> str:
     async with httpx.AsyncClient() as client:
@@ -569,6 +698,82 @@ async def execute_tool(name: str, input_data: dict, user_id: int = 0) -> str:
     elif name == "get_knowledge_statistics":
         from embeddings_tools import get_knowledge_statistics
         return await get_knowledge_statistics()
+    # Trading tools (admin-only)
+    elif name == "analyze_token":
+        from config import ADMIN_IDS
+        if user_id not in ADMIN_IDS:
+            return "Trading is admin-only."
+        from trading_agent import analyze_token
+        return await analyze_token(input_data["token_address"], input_data.get("chain", "base"))
+    elif name == "get_portfolio":
+        from config import ADMIN_IDS
+        if user_id not in ADMIN_IDS:
+            return "Trading is admin-only."
+        from trading_agent import get_portfolio_summary
+        return await get_portfolio_summary(user_id, input_data.get("chain", "base"))
+    elif name == "plan_trade":
+        from config import ADMIN_IDS
+        if user_id not in ADMIN_IDS:
+            return "Trading is admin-only."
+        from trading_agent import plan_trade as _plan_trade
+        from storage import get_wallet, save_trade
+        from wallet_manager import get_full_balances
+        chain = input_data.get("chain", "base")
+        wallet = get_wallet(user_id, chain)
+        if not wallet:
+            return f"No wallet connected for {chain}. Use /connect_wallet."
+        balances = get_full_balances(chain, wallet["address"])
+        # Estimate portfolio value using native balance + known tokens
+        native_coin = "ethereum" if chain == "base" else "binancecoin"
+        try:
+            price_str = await get_crypto_price(native_coin)
+            native_price = float(price_str.split("\n")[1].split()[1])
+        except Exception:
+            native_price = 3000 if chain == "base" else 600
+        portfolio_value = balances["native"]["balance_human"] * native_price
+        for info in balances["tokens"].values():
+            portfolio_value += info["balance_human"]  # rough USDC=1:1
+        plan = await _plan_trade(chain, input_data["token_in"], input_data["token_out"],
+                                  input_data["amount_usd"], wallet["address"], portfolio_value)
+        if plan["approved"]:
+            import json as _json
+            trade_id = save_trade(
+                user_id, chain, input_data["token_in"], input_data["token_out"],
+                input_data["amount_usd"], status="pending",
+                token_in_symbol=input_data.get("token_in_symbol", ""),
+                token_out_symbol=input_data.get("token_out_symbol", ""),
+                amount_usd=str(plan["amount_usd"]),
+                slippage_bps=plan["slippage_bps"],
+                risk_score=plan["risk_score"],
+                safety_report=_json.dumps(plan["safety"]),
+            )
+            plan["trade_id"] = trade_id
+            confirm = ""
+            if plan["needs_confirmation"]:
+                from config import TRADE_AUTO_THRESHOLD
+                confirm = f"\n\nTrade #{trade_id} needs confirmation (>${TRADE_AUTO_THRESHOLD}). Ask user to approve."
+            return _json.dumps(plan, indent=2, default=str) + confirm
+        else:
+            return f"Trade rejected: {plan['reason']}"
+    elif name == "execute_trade":
+        from config import ADMIN_IDS
+        if user_id not in ADMIN_IDS:
+            return "Trading is admin-only."
+        from trading_agent import execute_trade as _exec_trade
+        return await _exec_trade(input_data["trade_id"], user_id)
+    elif name == "set_trading_goal":
+        from config import ADMIN_IDS
+        if user_id not in ADMIN_IDS:
+            return "Trading is admin-only."
+        from trading_agent import create_trading_goal
+        return await create_trading_goal(user_id, input_data["target_amount"],
+                                         input_data.get("chain", "base"))
+    elif name == "get_trade_history":
+        from config import ADMIN_IDS
+        if user_id not in ADMIN_IDS:
+            return "Trading is admin-only."
+        from trading_agent import get_trade_history
+        return await get_trade_history(user_id, input_data.get("limit", 10))
     return f"Unknown tool: {name}"
 
 

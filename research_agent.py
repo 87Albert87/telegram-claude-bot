@@ -281,13 +281,14 @@ async def store_research_findings(findings: List[Dict]):
 
 async def analyze_research_insights(findings: List[Dict]) -> str:
     """
-    Use Claude to analyze research findings and extract insights.
+    Use Claude (Opus) to analyze research findings and extract insights.
     Returns summary of key insights.
     """
     if not findings:
         return "No research findings to analyze"
 
     from moltbook_agent import _generate, AGENT_SYSTEM
+    from config import CLAUDE_MODEL
 
     # Build research summary
     summary = "LATEST RESEARCH FINDINGS:\n\n"
@@ -310,7 +311,7 @@ Focus on:
 Reply with a concise summary (3-5 sentences) of the key insights."""
 
     try:
-        insights = await _generate(prompt, system=AGENT_SYSTEM)
+        insights = await _generate(prompt, system=AGENT_SYSTEM, model=CLAUDE_MODEL)
         logger.info(f"Research insights: {insights[:200]}...")
         return insights
     except Exception as e:
@@ -369,16 +370,22 @@ async def run_research_cycle():
 
 async def research_agent_loop():
     """
-    Main research agent loop - runs continuously every 30 minutes.
+    Main research agent loop — ECO mode with adaptive intervals.
+    Low traffic: 1-2x/day. High traffic: every hour.
     """
-    logger.info("Research agent started")
+    logger.info("Research agent started (ECO mode)")
+    await asyncio.sleep(120)  # Let bot start up
 
     while True:
         try:
+            from eco_mode import get_interval, get_traffic_level
+            level = get_traffic_level()
+            logger.info(f"Research cycle starting (traffic: {level})")
             await run_research_cycle()
         except Exception as e:
             logger.error(f"Research cycle error: {e}")
 
-        # Wait for next cycle
-        logger.info(f"Next research cycle in {RESEARCH_INTERVAL}s")
-        await asyncio.sleep(RESEARCH_INTERVAL)
+        from eco_mode import get_interval, get_traffic_level
+        interval = get_interval("research")
+        logger.info(f"Next research cycle in {interval // 3600}h{(interval % 3600) // 60}m (traffic: {get_traffic_level()})")
+        await asyncio.sleep(interval)

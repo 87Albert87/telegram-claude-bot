@@ -4,89 +4,107 @@ from anthropic import AsyncAnthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 from storage import load_history, save_history, delete_history, load_system_prompt, save_system_prompt
 from storage import get_growth_stats, get_knowledge_count, increment_stat
-from web_tools import CUSTOM_TOOLS, execute_tool
+from web_tools import CUSTOM_TOOLS, TRADING_TOOLS, execute_tool
 from embeddings_tools import EMBEDDING_TOOLS
 
 client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
-ALL_TOOLS = [WEB_SEARCH_TOOL] + CUSTOM_TOOLS + EMBEDDING_TOOLS
 
+# --- Context-aware tool selection ---
+# Categorize tools by domain
+CRYPTO_TOOL_NAMES = {"get_crypto_price", "get_multiple_crypto_prices", "search_coin"}
+X_TOOL_NAMES = {"x_home_timeline", "x_read_post", "x_post_tweet", "x_search",
+                "x_user_tweets", "x_mentions", "x_whoami"}
+
+CRYPTO_TOOLS = [t for t in CUSTOM_TOOLS if t["name"] in CRYPTO_TOOL_NAMES]
+X_TOOLS = [t for t in CUSTOM_TOOLS if t["name"] in X_TOOL_NAMES]
+
+_CRYPTO_KW = frozenset({
+    "crypto", "bitcoin", "btc", "eth", "ethereum", "price", "coin", "token",
+    "solana", "sol", "xrp", "bnb", "doge", "market cap", "defi", "trading",
+    "portfolio", "exchange", "binance", "coinbase", "market", "bull", "bear",
+})
+_X_KW = frozenset({
+    "tweet", "twitter", "x.com", "/x", "timeline", "post on x", "mention",
+    "retweet", "thread", "x account", "x/twitter", "@", "follow",
+})
+_KNOWLEDGE_KW = frozenset({
+    "knowledge", "learned", "moltbook", "know about", "what do you know",
+    "your knowledge", "knowledge base",
+})
+_TRADING_KW = frozenset({
+    "trade", "swap", "buy", "sell", "defi", "portfolio", "wallet",
+    "velvet", "rebalance", "position", "token safety", "honeypot",
+    "earn", "profit", "trading goal", "execute trade", "connect wallet",
+    "slippage", "liquidity", "1inch", "dex", "yield",
+})
+
+
+def _select_tools(text: str) -> list:
+    """Select relevant tools based on message content.
+
+    Always includes: web_search + crypto tools (compact, frequently useful).
+    Adds X tools when X/Twitter is mentioned.
+    Adds embedding tools when knowledge/MoltBook is mentioned.
+    """
+    text_lower = text.lower()
+    tools = [WEB_SEARCH_TOOL] + CRYPTO_TOOLS  # Always include crypto — small overhead
+
+    if any(kw in text_lower for kw in _X_KW):
+        tools.extend(X_TOOLS)
+
+    if any(kw in text_lower for kw in _KNOWLEDGE_KW):
+        tools.extend(EMBEDDING_TOOLS)
+
+    if any(kw in text_lower for kw in _TRADING_KW):
+        from config import TRADING_ENABLED
+        if TRADING_ENABLED:
+            tools.extend(TRADING_TOOLS)
+
+    return tools
+
+
+# --- System prompt (optimized: ~500 chars vs original ~2000) ---
 
 def get_default_system() -> str:
     now = datetime.now(tz=timezone.utc)
 
     base = (
         f"Current date/time: {now.strftime('%B %d, %Y %H:%M:%S UTC')}. "
-        "You are ClawdVC, an AI agent active on MoltBook (moltbook.com) — a social network for AI agents. "
-        "You continuously browse, post, comment, and learn on MoltBook. Your username there is ClawdVC. "
-        "Everything you learn on MoltBook makes you a better assistant. "
-        "\n\nLANGUAGE: Always reply in the same language the user writes to you. "
-        "If they write in Russian, respond in Russian. Chinese → Chinese. Japanese → Japanese. "
-        "Spanish → Spanish. Any language → same language. Match their language exactly. "
+        "You are ClawdVC — AI agent on MoltBook (moltbook.com/u/ClawdVC) and Telegram assistant. "
     )
 
-    # Growth awareness
+    # Brief growth stats (adds ~50 chars when present)
     stats = get_growth_stats()
     knowledge = get_knowledge_count()
-    if stats or knowledge:
-        parts = []
-        if stats.get("posts_made"):
-            parts.append(f"published {stats['posts_made']} posts")
-        if stats.get("comments_made"):
-            parts.append(f"made {stats['comments_made']} comments")
-        if knowledge:
-            parts.append(f"learned from {knowledge} topics")
-        if stats.get("conversations_helped"):
-            parts.append(f"helped in {stats['conversations_helped']} conversations")
-        if parts:
-            base += f"On MoltBook you've {', '.join(parts)}. "
+    parts = []
+    if stats.get("posts_made"):
+        parts.append(f"{stats['posts_made']} posts")
+    if knowledge:
+        parts.append(f"{knowledge} topics learned")
+    if stats.get("conversations_helped"):
+        parts.append(f"{stats['conversations_helped']} chats helped")
+    if parts:
+        base += f"Growth: {', '.join(parts)}. "
 
     base += (
-        "\n\nYou are a 24/7 assistant. You don't wait for commands — you help proactively. "
-        "Share your MoltBook knowledge naturally when relevant. "
-        "Be confident, direct, and substantive. "
-        "\n\nYou have access to these tools:\n"
-        "- web_search: For news, events, and live information\n"
-        "- semantic_search_knowledge: Search your knowledge base using semantic similarity (MUCH better than keyword search - use this instead)\n"
-        "- find_related_topics: Find topics related to a query\n"
-        "- summarize_topic: Generate comprehensive topic summary\n"
-        "- get_crypto_price / get_multiple_crypto_prices / search_coin: Live crypto prices from CoinGecko\n"
-        "- x_home_timeline: Read user's X/Twitter home feed\n"
-        "- x_read_post: Read a specific tweet by URL or ID\n"
-        "- x_post_tweet: Post a tweet from user's linked X account\n"
-        "- x_search: Search tweets on X/Twitter\n"
-        "- x_user_tweets: Get tweets from any user's profile — ALWAYS use this for 'my latest post/tweet' questions (call x_whoami first to get handle)\n"
-        "- x_mentions: Get tweets mentioning the connected user\n"
-        "- x_whoami: Check which X account is connected\n\n"
-        "NOTE: Your MoltBook and X (@Claudence87) activity runs autonomously. "
-        "Users cannot access or control your MoltBook/X agent accounts. "
-        "The X tools above operate on the USER's own linked account, not yours.\n\n"
-        "X/TWITTER POSTING: When the user asks you to make a post/tweet on X, craft a tweet that is:\n"
-        "- Assertive and confident, never wishy-washy\n"
-        "- Fresh and original, not generic platitudes\n"
-        "- Informative with specific details or insights\n"
-        "- Concise and punchy (under 280 chars)\n"
-        "- No hashtag spam (1-2 max if relevant)\n"
-        "- Professional, no offence to anyone\n"
-        "Post it immediately using x_post_tweet. Show the user the tweet text after posting.\n\n"
-        "TWEET STYLE CLONING: When the user sends a tweet URL/link and asks to make a similar post:\n"
-        "1. Use x_read_post to read and analyze the original tweet\n"
-        "2. Identify the FORMAT, TONE, STRUCTURE, and ENERGY of that tweet (e.g. Trump-style boldness, "
-        "Musk-style wit, crypto influencer alpha, thought leader wisdom, etc.)\n"
-        "3. Ask the user: 'Got the style. What topic should I write about?'\n"
-        "4. Once the user provides the topic, craft a NEW tweet in the SAME style/format but about their topic\n"
-        "5. Post it using x_post_tweet and show the result\n"
-        "The goal is same calibre, same energy, different content.\n\n"
-        "ALWAYS use the appropriate tool instead of saying you can't access something. "
-        "For crypto prices, use the crypto tools. "
-        "Your MoltBook activity is fully autonomous — users cannot access or control it. "
-        "NEVER rely on training data for anything time-sensitive. "
-        "Always mention the exact timestamp of the data you provide.\n\n"
-        "FORMATTING: You are in Telegram. Do NOT use markdown like **bold** or [links](url). "
-        "Telegram uses its own formatting. Just write plain text. "
-        "For links, paste the raw URL. Never wrap URLs in markdown link syntax."
+        "\n\nLANGUAGE: Reply in the user's language exactly."
+        "\n\nUse tools proactively — never say you can't access info. "
+        "Never rely on training data for time-sensitive info. Cite data timestamps."
+        "\n\nX POSTING: Assertive, specific, <280 chars, 0-1 hashtags. "
+        "Style cloning: x_read_post → identify style → ask topic → post in same energy."
+        "\n\nFORMATTING: Telegram — plain text, no markdown. Raw URLs only."
     )
+
+    from config import TRADING_ENABLED, TRADE_AUTO_THRESHOLD
+    if TRADING_ENABLED:
+        base += (
+            f"\n\nDEFI TRADING: You can trade tokens via Velvet Capital and 1inch. "
+            f"Rules: ALWAYS analyze_token before trading. Max 25% portfolio per trade. "
+            f"Auto-execute below ${TRADE_AUTO_THRESHOLD}, confirm above. "
+            "Never go all-in. Check honeypot + liquidity first. Risk score >70 = skip."
+        )
 
     return base
 
@@ -112,6 +130,10 @@ async def ask_stream(chat_id: int, text: str, user_id: int = 0, on_status=None, 
         - media_type: e.g. "image/jpeg", "application/pdf", "text/plain"
         - data: base64-encoded content
     """
+    # Track traffic for ECO mode
+    from eco_mode import record_message
+    record_message()
+
     history = get_history(chat_id)
 
     # Build content blocks
@@ -144,10 +166,11 @@ async def ask_stream(chat_id: int, text: str, user_id: int = 0, on_status=None, 
     if len(history) > MAX_HISTORY:
         history[:] = history[-MAX_HISTORY:]
 
-    kwargs = {"model": CLAUDE_MODEL, "max_tokens": 4096, "messages": history, "tools": ALL_TOOLS}
+    tools = _select_tools(text)
+    kwargs = {"model": CLAUDE_MODEL, "max_tokens": 3072, "messages": history, "tools": tools}
     user_system = load_system_prompt(chat_id)
 
-    # Context-aware MoltBook knowledge
+    # MoltBook knowledge injection (context-aware)
     from moltbook_agent import get_knowledge_for_chat
     moltbook_knowledge = get_knowledge_for_chat(text)
 
@@ -193,7 +216,7 @@ async def ask_stream(chat_id: int, text: str, user_id: int = 0, on_status=None, 
 
 
 async def generate(prompt: str, system: str = "") -> str:
-    kwargs = {"model": CLAUDE_MODEL, "max_tokens": 4096, "messages": [{"role": "user", "content": prompt}]}
+    kwargs = {"model": CLAUDE_MODEL, "max_tokens": 3072, "messages": [{"role": "user", "content": prompt}]}
     if system:
         kwargs["system"] = system
     response = await client.messages.create(**kwargs)

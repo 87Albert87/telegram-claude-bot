@@ -50,7 +50,6 @@ def get_conn() -> sqlite3.Connection:
                 username TEXT DEFAULT '',
                 first_name TEXT DEFAULT '',
                 first_seen TEXT NOT NULL,
-                trial_expires TEXT NOT NULL,
                 is_blocked INTEGER NOT NULL DEFAULT 0
             )
         """)
@@ -58,55 +57,88 @@ def get_conn() -> sqlite3.Connection:
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                chat_id INTEGER NOT NULL,
-                chat_type TEXT NOT NULL DEFAULT 'private',
                 plan TEXT NOT NULL,
-                period TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'active',
-                starts_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                daily_limit INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                payment_method TEXT DEFAULT '',
-                telegram_payment_charge_id TEXT DEFAULT '',
-                provider_payment_charge_id TEXT DEFAULT ''
+                payment_method TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                expires_at TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status)")
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                payment_method TEXT NOT NULL,
+                payment_id TEXT,
+                plan TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL
             )
         """)
         _conn.execute("""
             CREATE TABLE IF NOT EXISTS daily_usage (
                 user_id INTEGER NOT NULL,
-                chat_id INTEGER NOT NULL,
                 date TEXT NOT NULL,
                 message_count INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (user_id, chat_id, date)
+                PRIMARY KEY (user_id, date)
+            )
+        """)
+        # DeFi Trading tables
+        _conn.execute("""
+            CREATE TABLE IF NOT EXISTS wallets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chain TEXT NOT NULL,
+                encrypted_key TEXT NOT NULL,
+                address TEXT NOT NULL,
+                label TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                UNIQUE(user_id, chain)
             )
         """)
         _conn.execute("""
-            CREATE TABLE IF NOT EXISTS message_packs (
+            CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                quantity INTEGER NOT NULL DEFAULT 50,
-                used INTEGER NOT NULL DEFAULT 0,
-                purchased_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                telegram_payment_charge_id TEXT DEFAULT '',
-                provider_payment_charge_id TEXT DEFAULT ''
+                chain TEXT NOT NULL,
+                token_in TEXT NOT NULL,
+                token_in_symbol TEXT DEFAULT '',
+                token_out TEXT NOT NULL,
+                token_out_symbol TEXT DEFAULT '',
+                amount_in TEXT NOT NULL,
+                amount_out TEXT DEFAULT '',
+                amount_usd TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                tx_hash TEXT DEFAULT '',
+                slippage_bps INTEGER DEFAULT 0,
+                risk_score INTEGER DEFAULT 0,
+                safety_report TEXT DEFAULT '{}',
+                goal_id INTEGER DEFAULT NULL,
+                error TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                executed_at TEXT DEFAULT '',
+                FOREIGN KEY (goal_id) REFERENCES trading_goals(id)
             )
         """)
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_user ON trades(user_id, status)")
         _conn.execute("""
-            CREATE TABLE IF NOT EXISTS payments (
+            CREATE TABLE IF NOT EXISTS trading_goals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                chat_id INTEGER NOT NULL,
-                payment_type TEXT NOT NULL,
-                amount INTEGER NOT NULL,
-                currency TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                telegram_payment_charge_id TEXT NOT NULL,
-                provider_payment_charge_id TEXT NOT NULL,
-                created_at TEXT NOT NULL
+                target_amount REAL NOT NULL,
+                current_progress REAL DEFAULT 0.0,
+                strategy TEXT DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'active',
+                chain TEXT DEFAULT 'base',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
         """)
+        _conn.execute("CREATE INDEX IF NOT EXISTS idx_goals_user ON trading_goals(user_id, status)")
         _conn.commit()
     return _conn
 
@@ -409,3 +441,150 @@ def get_all_knowledge_for_migration() -> List[Dict]:
         })
 
     return items
+
+
+# --- DeFi Trading: Wallets ---
+
+def _get_wallet_fernet():
+    from cryptography.fernet import Fernet
+    from config import get_wallet_key
+    return Fernet(get_wallet_key())
+
+
+def save_wallet(user_id: int, chain: str, private_key: str, address: str, label: str = ""):
+    conn = get_conn()
+    f = _get_wallet_fernet()
+    encrypted = f.encrypt(private_key.encode()).decode()
+    conn.execute(
+        "INSERT INTO wallets (user_id, chain, encrypted_key, address, label, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, chain) DO UPDATE SET encrypted_key=excluded.encrypted_key, "
+        "address=excluded.address, label=excluded.label",
+        (user_id, chain, encrypted, address, label, datetime.now(tz=timezone.utc).isoformat()),
+    )
+    conn.commit()
+
+
+def get_wallet(user_id: int, chain: str) -> Optional[Dict]:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT encrypted_key, address, label FROM wallets WHERE user_id=? AND chain=?",
+        (user_id, chain),
+    ).fetchone()
+    if not row:
+        return None
+    f = _get_wallet_fernet()
+    return {
+        "private_key": f.decrypt(row[0].encode()).decode(),
+        "address": row[1],
+        "label": row[2],
+    }
+
+
+def get_all_wallets(user_id: int) -> List[Dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT chain, address, label, created_at FROM wallets WHERE user_id=?",
+        (user_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_wallet(user_id: int, chain: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM wallets WHERE user_id=? AND chain=?", (user_id, chain))
+    conn.commit()
+
+
+# --- DeFi Trading: Trades ---
+
+def save_trade(user_id: int, chain: str, token_in: str, token_out: str,
+               amount_in: str, status: str = "pending", **kwargs) -> int:
+    conn = get_conn()
+    cursor = conn.execute(
+        "INSERT INTO trades (user_id, chain, token_in, token_out, amount_in, status, "
+        "token_in_symbol, token_out_symbol, amount_usd, slippage_bps, risk_score, "
+        "safety_report, goal_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (user_id, chain, token_in, token_out, amount_in, status,
+         kwargs.get("token_in_symbol", ""), kwargs.get("token_out_symbol", ""),
+         kwargs.get("amount_usd", ""), kwargs.get("slippage_bps", 0),
+         kwargs.get("risk_score", 0), kwargs.get("safety_report", "{}"),
+         kwargs.get("goal_id"), datetime.now(tz=timezone.utc).isoformat()),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def update_trade(trade_id: int, **kwargs):
+    conn = get_conn()
+    sets = []
+    vals = []
+    for k, v in kwargs.items():
+        sets.append(f"{k}=?")
+        vals.append(v)
+    if sets:
+        vals.append(trade_id)
+        conn.execute(f"UPDATE trades SET {', '.join(sets)} WHERE id=?", vals)
+        conn.commit()
+
+
+def get_trade(trade_id: int) -> Optional[Dict]:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM trades WHERE id=?", (trade_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_trades(user_id: int, limit: int = 20) -> List[Dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM trades WHERE user_id=? ORDER BY id DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_pending_trades(user_id: int) -> List[Dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM trades WHERE user_id=? AND status IN ('pending','confirmed') ORDER BY id",
+        (user_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --- DeFi Trading: Goals ---
+
+def save_trading_goal(user_id: int, target_amount: float, chain: str = "base",
+                      strategy: str = "{}") -> int:
+    now = datetime.now(tz=timezone.utc).isoformat()
+    conn = get_conn()
+    cursor = conn.execute(
+        "INSERT INTO trading_goals (user_id, target_amount, strategy, chain, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (user_id, target_amount, strategy, chain, now, now),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_active_goals(user_id: int) -> List[Dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM trading_goals WHERE user_id=? AND status='active' ORDER BY id DESC",
+        (user_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_goal(goal_id: int, **kwargs):
+    conn = get_conn()
+    sets = []
+    vals = []
+    for k, v in kwargs.items():
+        sets.append(f"{k}=?")
+        vals.append(v)
+    sets.append("updated_at=?")
+    vals.append(datetime.now(tz=timezone.utc).isoformat())
+    vals.append(goal_id)
+    conn.execute(f"UPDATE trading_goals SET {', '.join(sets)} WHERE id=?", vals)
+    conn.commit()

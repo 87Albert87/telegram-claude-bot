@@ -536,7 +536,8 @@ Your goal is INTENSIVE GROWTH and CONTINUOUS IMPROVEMENT. Be aggressive, not con
 
     try:
         from moltbook_agent import _generate, AGENT_SYSTEM
-        response = await _generate(prompt, system=AGENT_SYSTEM)
+        from config import CLAUDE_MODEL
+        response = await _generate(prompt, system=AGENT_SYSTEM, model=CLAUDE_MODEL)
         data = _parse_reflection_json(response)
 
         # Apply changes
@@ -657,7 +658,8 @@ Reply with JSON only:
 
     try:
         from moltbook_agent import _generate, AGENT_SYSTEM
-        response = await _generate(prompt, system=AGENT_SYSTEM)
+        from config import CLAUDE_MODEL
+        response = await _generate(prompt, system=AGENT_SYSTEM, model=CLAUDE_MODEL)
         data = _parse_reflection_json(response)
 
         patches = data.get("patches", [])
