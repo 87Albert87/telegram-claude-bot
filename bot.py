@@ -158,8 +158,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if TRADING_ENABLED and user_id in ADMIN_IDS:
         greeting += (
             "\nDeFi Trading:\n"
-            "/connect_wallet <chain> <key> - Connect wallet\n"
-            "/disconnect_wallet <chain> - Disconnect wallet\n"
+            "/connect_wallet [chain] - Load wallet from .env\n"
+            "/disconnect_wallet [chain] - Disconnect wallet\n"
             "/portfolio [chain] - View portfolio\n"
             "/trades - Trade history\n"
         )
@@ -594,6 +594,7 @@ async def connect_x_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 async def connect_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Load wallet from .env (WALLET_BASE_KEY / WALLET_BNB_KEY). Never via chat."""
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("Admin only.")
         return
@@ -601,49 +602,37 @@ async def connect_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not TRADING_ENABLED:
         await update.message.reply_text("Trading is not enabled. Set TRADING_ENABLED=true in .env")
         return
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
     args = context.args if context.args else []
-    if len(args) < 2:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=(
-                "Usage: /connect_wallet <chain> <private_key>\n\n"
-                "Chains: base, bnb\n"
-                "Example: /connect_wallet base 0xYOUR_PRIVATE_KEY\n\n"
-                "Your message will be deleted immediately for security. "
-                "The key is encrypted with Fernet before storage."
-            ),
-        )
-        return
-    chain = args[0].lower()
-    private_key = args[1]
+    chain = args[0].lower() if args else "base"
     if chain not in ("base", "bnb"):
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Unsupported chain. Use 'base' or 'bnb'.",
+        await update.message.reply_text("Unsupported chain. Use 'base' or 'bnb'.")
+        return
+    import os
+    env_key = os.getenv(f"WALLET_{chain.upper()}_KEY", "")
+    if not env_key:
+        await update.message.reply_text(
+            f"No wallet key found for {chain}.\n\n"
+            f"Set WALLET_{chain.upper()}_KEY in your .env file on the server.\n"
+            "NEVER send private keys via Telegram chat.\n\n"
+            "Steps:\n"
+            f"1. SSH into VPS\n"
+            f"2. Add to .env: WALLET_{chain.upper()}_KEY=0xYOUR_KEY\n"
+            "3. Restart: docker compose restart\n"
+            "4. Run /connect_wallet again"
         )
         return
     from wallet_manager import validate_private_key
-    valid, address = validate_private_key(private_key)
+    valid, address = validate_private_key(env_key)
     if not valid:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"Invalid private key: {address}",
-        )
+        await update.message.reply_text(f"Invalid key in WALLET_{chain.upper()}_KEY: {address}")
         return
     from storage import save_wallet
-    save_wallet(update.effective_user.id, chain, private_key, address)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=(
-            f"Wallet connected for {chain.upper()}!\n"
-            f"Address: {address}\n"
-            f"Your message with the private key has been deleted.\n"
-            f"Use /portfolio to check balances."
-        ),
+    save_wallet(update.effective_user.id, chain, env_key, address)
+    await update.message.reply_text(
+        f"Wallet connected for {chain.upper()}!\n"
+        f"Address: {address}\n"
+        f"Key loaded from .env (never sent via chat).\n"
+        f"Use /portfolio to check balances."
     )
 
 
