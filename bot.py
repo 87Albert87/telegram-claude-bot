@@ -29,6 +29,38 @@ logger = logging.getLogger(__name__)
 
 STREAM_EDIT_INTERVAL = 1.0
 
+_bot_username = ""
+
+
+# ---------------------------------------------------------------------------
+# Group chat trigger detection
+# ---------------------------------------------------------------------------
+
+def _is_bot_triggered(update: Update) -> tuple[bool, str]:
+    """Check if the bot should respond in a group chat.
+
+    Returns (should_respond, cleaned_text).
+    Triggers: reply to bot's message, or @mention in text.
+    """
+    msg = update.message
+    if not msg:
+        return False, ""
+
+    # Reply to the bot's own message
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        if msg.reply_to_message.from_user.username and \
+           msg.reply_to_message.from_user.username.lower() == _bot_username.lower():
+            return True, (msg.text or msg.caption or "")
+
+    # @mention in text
+    text = msg.text or msg.caption or ""
+    if _bot_username and f"@{_bot_username.lower()}" in text.lower():
+        import re
+        cleaned = re.sub(rf"@{re.escape(_bot_username)}\b", "", text, flags=re.IGNORECASE).strip()
+        return True, cleaned
+
+    return False, ""
+
 
 # ---------------------------------------------------------------------------
 # Subscription gate
@@ -781,7 +813,9 @@ async def analyze_video(file_path: str, prompt: str = None) -> str:
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages by transcribing and processing with Claude."""
     if update.effective_chat.type != "private":
-        return
+        triggered, _ = _is_bot_triggered(update)
+        if not triggered:
+            return
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
@@ -834,7 +868,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle video messages - analyze with Gemini."""
     if update.effective_chat.type != "private":
-        return
+        triggered, _ = _is_bot_triggered(update)
+        if not triggered:
+            return
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
@@ -895,7 +931,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle photo messages - analyze with Claude's vision."""
     if update.effective_chat.type != "private":
-        return
+        triggered, _ = _is_bot_triggered(update)
+        if not triggered:
+            return
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
@@ -944,7 +982,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle document messages - analyze PDFs, read text files."""
     if update.effective_chat.type != "private":
-        return
+        triggered, _ = _is_bot_triggered(update)
+        if not triggered:
+            return
 
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("Rate limit exceeded. Please wait a moment.")
@@ -1060,13 +1100,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _news_reply(update, context, topic)
         return
 
-    # Groups/channels
+    # Groups/channels — only respond when @mentioned or replied to
     if update.effective_chat.type != "private":
+        triggered, clean_text = _is_bot_triggered(update)
+        if not triggered or not clean_text:
+            return
+        if is_rate_limited(update.effective_user.id):
+            return
         if not await check_subscription_gate(update):
             return
         try:
             await stream_reply(update.message, update.effective_chat.id,
-                               update.message.text, user_id=update.effective_user.id)
+                               clean_text, user_id=update.effective_user.id)
         except Exception as e:
             logger.error(f"Error: {e}", exc_info=True)
         return
@@ -1237,10 +1282,47 @@ async def check_payment_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
+# Group admin commands
+# ---------------------------------------------------------------------------
+
+async def groupprompt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: set a system prompt for a group chat.
+    Usage: /groupprompt <group_chat_id> <prompt text>
+    """
+    if update.effective_user.id not in ADMIN_IDS:
+        return
+
+    args = context.args
+    if not args or len(args) < 2:
+        await update.message.reply_text(
+            "Usage: /groupprompt <group_chat_id> <prompt text>"
+        )
+        return
+
+    try:
+        group_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Invalid group chat ID.")
+        return
+
+    prompt_text = " ".join(args[1:])
+    set_system_prompt(group_id, prompt_text)
+    await update.message.reply_text(
+        f"System prompt set for group {group_id}.\n\n"
+        f"Prompt: {prompt_text[:200]}{'...' if len(prompt_text) > 200 else ''}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
 
 async def post_init(application):
+    global _bot_username
+    me = await application.bot.get_me()
+    _bot_username = me.username or ""
+    logger.info(f"Bot username: @{_bot_username}")
+
     from evolution import _clear_markers_after_delay, _MODIFIED_MARKER
     if os.path.exists(_MODIFIED_MARKER):
         asyncio.create_task(_clear_markers_after_delay(120))
@@ -1297,6 +1379,9 @@ def main():
     app.add_handler(CommandHandler("disconnect_x", disconnect_x))
     app.add_handler(CommandHandler("connect_x_bot", connect_x_bot))
     app.add_handler(CommandHandler("check_x", check_x))
+
+    # Group admin commands
+    app.add_handler(CommandHandler("groupprompt", groupprompt_cmd))
 
     # Trading commands (admin only)
     app.add_handler(CommandHandler("connect_wallet", connect_wallet))
